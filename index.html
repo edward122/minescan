@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Minescan</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+
+<body>
+  <!-- 3D Canvas Container -->
+  <div id="app"></div>
+
+  <!-- Underwater Overlay -->
+  <div id="underwater-overlay" class="hidden"></div>
+
+  <!-- HUD Layer -->
+  <div id="hud">
+    <div id="crosshair">+</div>
+    <div id="mining-progress" class="hidden">
+      <div id="mining-progress-bar"></div>
+    </div>
+    <div id="stats-bar">
+      <div id="health-bar" class="stat-bar"></div>
+      <div class="stats-right">
+        <div id="air-bar" class="stat-bar"></div>
+        <div id="hunger-bar" class="stat-bar"></div>
+      </div>
+    </div>
+    <div id="hotbar" class="hotbar"></div>
+  </div>
+
+  <!-- Debug Overlay -->
+  <div id="debug-overlay" class="hidden">
+    <div>FPS: <span id="debug-fps">0</span></div>
+    <div>XYZ: <span id="debug-xyz">0.00 / 0.00 / 0.00</span></div>
+    <div>Chunk: <span id="debug-chunk">0 / 0 / 0</span></div>
+    <div>Facing: <span id="debug-facing">None</span></div>
+  </div>
+
+  <!-- UI Overlays (Menus, Inventory) -->
+  <div id="ui-layer" class="hidden">
+    <div id="inventory-screen" class="hidden inventory-container">
+      <h2 id="inventory-title">Inventory</h2>
+
+      <!-- Recipe Book Toggle -->
+      <button id="btn-toggle-recipe-book" class="mc-button mc-button-small"
+        style="position:absolute; top: 10px; left: 10px; z-index: 10; padding: 4px 8px; font-size: 12px; min-width: auto; margin: 0;">Recipes</button>
+
+      <!-- Recipe Book Panel -->
+      <div id="recipe-book-panel" class="recipe-book-panel hidden">
+        <h3 class="panel-label">Recipe Book</h3>
+        <input type="text" id="recipe-search" placeholder="Search..." autocomplete="off">
+        <div id="recipe-list" class="recipe-list"></div>
+      </div>
+
+      <!-- Top dynamic section -->
+      <div id="inventory-top-section" class="inventory-top-section">
+
+        <!-- Player Character Preview -->
+        <div id="player-preview-panel" class="preview-panel hidden">
+          <div id="player-preview-canvas-container" class="preview-canvas-container"></div>
+        </div>
+
+        <!-- Player Crafting (2x2) -->
+        <div id="player-crafting-panel" class="crafting-panel hidden">
+          <div class="crafting-grid-container">
+            <h3 class="panel-label">Crafting</h3>
+            <div id="player-crafting-grid" class="slot-grid crafting-2x2"></div>
+          </div>
+          <div class="crafting-arrow">➔</div>
+          <div id="player-crafting-result" class="slot result-slot"></div>
+        </div>
+
+        <!-- Crafting Table (3x3) -->
+        <div id="table-crafting-panel" class="crafting-panel hidden">
+          <div class="crafting-grid-container">
+            <h3 class="panel-label">Crafting</h3>
+            <div id="table-crafting-grid" class="slot-grid crafting-3x3"></div>
+          </div>
+          <div class="crafting-arrow">➔</div>
+          <div id="table-crafting-result" class="slot result-slot"></div>
+        </div>
+
+        <!-- Furnace -->
+        <div id="furnace-panel" class="furnace-panel hidden">
+          <h3 class="panel-label">Furnace</h3>
+          <div class="furnace-layout">
+            <div class="furnace-io">
+              <div id="furnace-input" class="slot"></div>
+              <div class="furnace-fire-bg">
+                <div id="furnace-fire-fg" class="furnace-fire-fg"></div>
+              </div>
+              <div id="furnace-fuel" class="slot"></div>
+            </div>
+            <div class="furnace-progress-container">
+              <div class="furnace-progress-bg">
+                <div id="furnace-progress-fg" class="furnace-progress-fg"></div>
+              </div>
+            </div>
+            <div id="furnace-result" class="slot result-slot large-slot"></div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="main-inventory-section">
+        <div id="inventory-grid" class="slot-grid inventory-3x9"></div>
+        <div class="inventory-spacer"></div>
+        <div id="inventory-hotbar" class="slot-grid hotbar-1x9"></div>
+      </div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="menu-screen hidden">
+      <h1>Generating World...</h1>
+      <div class="spinner"></div>
+    </div>
+
+    <!-- Main Menu -->
+    <div id="main-menu" class="menu-screen">
+      <h1 class="game-title">Minescan</h1>
+      <div id="world-select-container">
+        <div id="world-list"></div>
+        <div id="create-world-form">
+          <input type="text" id="new-world-name" placeholder="World Name" maxlength="24">
+          <input type="text" id="new-world-seed" placeholder="Seed (optional)" maxlength="20">
+          <button id="btn-create-world" class="mc-button">Create New World</button>
+        </div>
+      </div>
+      <button id="btn-settings" class="mc-button">Settings</button>
+      <div id="multiplayer-section">
+        <div id="mp-controls">
+          <input type="text" id="mp-server" placeholder="ws://localhost:8080" value="ws://localhost:8080">
+          <input type="text" id="mp-name" placeholder="Your Name" maxlength="16">
+          <button id="btn-mp-connect" class="mc-button mc-button-small">Connect</button>
+          <button id="btn-mp-disconnect" class="mc-button mc-button-small mc-button-danger hidden">Disconnect</button>
+        </div>
+        <div id="mp-status" class="mp-status-text"></div>
+      </div>
+    </div>
+
+    <!-- Pause Menu -->
+    <div id="pause-menu" class="menu-screen hidden">
+      <h2>Game Paused</h2>
+      <button id="btn-resume" class="mc-button">Back to Game</button>
+      <button id="btn-pause-settings" class="mc-button">Settings</button>
+      <button id="btn-quit" class="mc-button mc-button-danger">Save & Quit to Title</button>
+    </div>
+
+    <!-- Death Screen -->
+    <div id="death-screen" class="menu-screen hidden">
+      <h1 class="death-title">You Died!</h1>
+      <p class="death-subtitle">Score: 0</p>
+      <button id="btn-respawn" class="mc-button">Respawn</button>
+    </div>
+
+    <!-- Settings Menu -->
+    <div id="settings-menu" class="menu-screen hidden">
+      <h2>Settings</h2>
+
+      <div class="settings-columns">
+        <!-- Left column: Video -->
+        <div class="settings-column">
+          <h3 class="settings-category">Video</h3>
+
+          <div class="setting-row">
+            <label for="setting-fov">FOV: <span id="val-fov">75</span></label>
+            <input type="range" id="setting-fov" min="30" max="110" value="75">
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-render-dist">Render Distance: <span id="val-render-dist">4</span></label>
+            <input type="range" id="setting-render-dist" min="1" max="8" value="4">
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-resolution">Resolution Scale: <span id="val-resolution">100%</span></label>
+            <input type="range" id="setting-resolution" min="50" max="100" step="25" value="100">
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-shadows">Shadows</label>
+            <select id="setting-shadows">
+              <option value="off">Off</option>
+              <option value="basic">Basic</option>
+              <option value="soft" selected>Soft</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-particles">Particles</label>
+            <select id="setting-particles">
+              <option value="all" selected>All</option>
+              <option value="reduced">Reduced</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Right column: Game -->
+        <div class="settings-column">
+          <h3 class="settings-category">Game</h3>
+
+          <div class="setting-row">
+            <label for="setting-sensitivity">Mouse Sensitivity: <span id="val-sensitivity">100%</span></label>
+            <input type="range" id="setting-sensitivity" min="25" max="300" value="100">
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-volume">Master Volume: <span id="val-volume">100%</span></label>
+            <input type="range" id="setting-volume" min="0" max="100" value="100">
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-settings-back" class="mc-button" style="margin-top: 20px;">Done</button>
+    </div>
+  </div>
+
+  <!-- Item Tooltip -->
+  <div id="item-tooltip" class="hidden"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+
+</html>
