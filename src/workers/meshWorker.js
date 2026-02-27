@@ -4,8 +4,10 @@
 // neighborData: { "dx,dy,dz": Uint8Array } for 6 neighbors
 
 // Inlined block data (only what meshing needs: transparency, crossShape, texture coords)
-const transparentBlocks = new Set([0, 5, 7, 8, 19, 42, 43, 44, 48, 51, 52, 54, 55]);
+const transparentBlocks = new Set([0, 5, 7, 8, 18, 19, 42, 43, 44, 48, 51, 52, 54, 55, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82]);
 const crossShapeBlocks = new Set([42, 43, 44, 51]);
+// Blocks with custom meshes (not standard cubes, not cross shapes)
+const customMeshBlocks = new Set([18, 19, 52, 54, 55, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82]);
 
 // Texture coords: [blockId] -> { all?, top?, side?, bottom?, front? }
 const blockTextures = {
@@ -40,15 +42,39 @@ const blockTextures = {
     53: { all: [8, 3] },          // Mossy Cobblestone
     54: { all: [4, 1] },          // Lantern
     55: { top: [5, 1], side: [6, 1], bottom: [5, 1] }, // Cactus
+    // Phase 1 new blocks
+    62: { top: [8, 0], side: [6, 4], bottom: [8, 0] }, // Bookshelf
+    63: { top: [8, 4], side: [7, 4], bottom: [8, 4] }, // TNT
+    64: { all: [9, 4] },          // White Wool
+    65: { all: [10, 4] },         // Red Wool
+    66: { all: [11, 4] },         // Blue Wool
+    67: { all: [12, 4] },         // Green Wool
+    68: { all: [13, 4] },         // Yellow Wool
+    69: { all: [14, 4] },         // Black Wool
+    // Phase 2 custom shape blocks
+    70: { all: [0, 11] },         // Oak Door
+    71: { all: [1, 11] },         // Oak Fence
+    72: { all: [2, 11] },         // Ladder
+    73: { all: [8, 0] },          // Oak Slab (uses plank texture)
+    74: { all: [8, 0] },          // Oak Stairs (uses plank texture)
+    75: { all: [3, 11] },         // Sign
+    76: { all: [4, 11] },         // Trapdoor
+    77: { top: [5, 11], side: [6, 11], bottom: [8, 0] }, // Bed
+    78: { all: [0, 12] },         // Oak Door Top
+    79: { all: [0, 11] },         // Oak Door Bottom Open
+    80: { all: [0, 12] },         // Oak Door Top Open
+    81: { all: [4, 11] },         // Trapdoor Open
 };
 
-const faceNames = ['side', 'side', 'bottom', 'top', 'side', 'side'];
+const faceNames = ['left', 'right', 'bottom', 'top', 'back', 'front'];
 
 function getBlockTextureCoords(voxel, faceIndex) {
     const tex = blockTextures[voxel];
     if (!tex) return [0, 0];
     const faceName = faceNames[faceIndex];
-    return tex[faceName] || tex.all || [0, 0];
+    if (tex[faceName]) return tex[faceName];
+    if (tex.side && (faceName === 'left' || faceName === 'right' || faceName === 'front' || faceName === 'back')) return tex.side;
+    return tex.all || [0, 0];
 }
 
 function isTransparent(voxel) {
@@ -57,6 +83,10 @@ function isTransparent(voxel) {
 
 function isCrossShape(voxel) {
     return crossShapeBlocks.has(voxel);
+}
+
+function isCustomMesh(voxel) {
+    return customMeshBlocks.has(voxel);
 }
 
 // Face definitions matching VoxelWorld.faces
@@ -74,6 +104,143 @@ const crossFaces = [
     { corners: [[0, 0, 0], [1, 0, 1], [0, 1, 0], [1, 1, 1]], normal: [-0.707, 0, 0.707] },
     { corners: [[1, 0, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1]], normal: [0.707, 0, 0.707] },
 ];
+
+// Helper to add a box mesh (arbitrary bounds) with per-face textures
+function addBoxMesh(x, y, z, minX, minY, minZ, maxX, maxY, maxZ, voxel,
+    positions, normals, uvs, indices, colors,
+    tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness) {
+
+    const boxFaces = [
+        {
+            dir: [-1, 0, 0], fi: 0, corners: [
+                { pos: [minX, maxY, minZ], uv: [0, 1] }, { pos: [minX, minY, minZ], uv: [0, 0] },
+                { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [minX, minY, maxZ], uv: [1, 0] }]
+        },
+        {
+            dir: [1, 0, 0], fi: 1, corners: [
+                { pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, minY, maxZ], uv: [0, 0] },
+                { pos: [maxX, maxY, minZ], uv: [1, 1] }, { pos: [maxX, minY, minZ], uv: [1, 0] }]
+        },
+        {
+            dir: [0, -1, 0], fi: 2, corners: [
+                { pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, minY, maxZ], uv: [0, 0] },
+                { pos: [maxX, minY, minZ], uv: [1, 1] }, { pos: [minX, minY, minZ], uv: [0, 1] }]
+        },
+        {
+            dir: [0, 1, 0], fi: 3, corners: [
+                { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [maxX, maxY, maxZ], uv: [0, 1] },
+                { pos: [minX, maxY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 0] }]
+        },
+        {
+            dir: [0, 0, -1], fi: 4, corners: [
+                { pos: [maxX, minY, minZ], uv: [0, 0] }, { pos: [minX, minY, minZ], uv: [1, 0] },
+                { pos: [maxX, maxY, minZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 1] }]
+        },
+        {
+            dir: [0, 0, 1], fi: 5, corners: [
+                { pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, maxZ], uv: [1, 0] },
+                { pos: [minX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, maxY, maxZ], uv: [1, 1] }]
+        },
+    ];
+
+    for (const face of boxFaces) {
+        const [texU, texV] = getBlockTextureCoords(voxel, face.fi);
+        const u0 = (texU * tileSize) / tileTextureWidth + halfPixel;
+        const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
+        const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
+        const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
+
+        const ndx = positions.length / 3;
+        const brightness = faceBrightness[face.fi];
+        for (const { pos, uv } of face.corners) {
+            positions.push(pos[0], pos[1], pos[2]);
+            normals.push(face.dir[0], face.dir[1], face.dir[2]);
+            colors.push(brightness, brightness, brightness);
+            uvs.push(uv[0] === 0 ? u0 : u1, uv[1] === 0 ? v0 : v1);
+        }
+        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+    }
+}
+
+function _addChestPartMesh(x, y, z, minX, minY, minZ, maxX, maxY, maxZ,
+    positions, normals, uvs, indices, colors,
+    tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, isLid) {
+
+    // Texture atlas coordinates for chest faces
+    // 18 is Chest. getBlockTextureCoords returns [u, v] array.
+    const texCoords = [
+        getBlockTextureCoords(18, 0), // Left [-X] (Side)
+        getBlockTextureCoords(18, 1), // Right [+X] (Side)
+        getBlockTextureCoords(18, 2), // Bottom [-Y]
+        getBlockTextureCoords(18, 3), // Top [+Y]
+        getBlockTextureCoords(18, 4), // Back [-Z] (Side)
+        getBlockTextureCoords(18, 5)  // Front [+Z]
+    ];
+
+    const boxFaces = [
+        {
+            dir: [-1, 0, 0], fi: 0, corners: [
+                { pos: [minX, maxY, minZ], uv: [0, 1] }, { pos: [minX, minY, minZ], uv: [0, 0] },
+                { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [minX, minY, maxZ], uv: [1, 0] }]
+        },
+        {
+            dir: [1, 0, 0], fi: 1, corners: [
+                { pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, minY, maxZ], uv: [0, 0] },
+                { pos: [maxX, maxY, minZ], uv: [1, 1] }, { pos: [maxX, minY, minZ], uv: [1, 0] }]
+        },
+        {
+            dir: [0, -1, 0], fi: 2, corners: [
+                { pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, minY, maxZ], uv: [0, 0] },
+                { pos: [maxX, minY, minZ], uv: [1, 1] }, { pos: [minX, minY, minZ], uv: [0, 1] }]
+        },
+        {
+            dir: [0, 1, 0], fi: 3, corners: [
+                { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [maxX, maxY, maxZ], uv: [0, 1] },
+                { pos: [minX, maxY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 0] }]
+        },
+        {
+            dir: [0, 0, -1], fi: 4, corners: [
+                { pos: [maxX, minY, minZ], uv: [0, 0] }, { pos: [minX, minY, minZ], uv: [1, 0] },
+                { pos: [maxX, maxY, minZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 1] }]
+        },
+        {
+            dir: [0, 0, 1], fi: 5, corners: [
+                { pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, maxZ], uv: [1, 0] },
+                { pos: [minX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, maxY, maxZ], uv: [1, 1] }]
+        }
+    ];
+
+    for (const face of boxFaces) {
+        const [texU, texV] = texCoords[face.fi];
+        const u0 = (texU * tileSize) / tileTextureWidth + halfPixel;
+        const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
+        // Native texture mapping: vBottom is the BOTTOM coordinate (e.g. 0.25), vTop is the TOP coordinate (e.g. 0.3125)
+        let vBottom = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
+        let vTop = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
+
+        // Adjust vertical texture coordinates based on piece
+        if (face.fi === 0 || face.fi === 1 || face.fi === 4 || face.fi === 5) { // Sides
+            const totalH = vTop - vBottom;
+            const splitV = vBottom + totalH * (10 / 14);
+            if (isLid) {
+                vBottom = splitV; // Lid uses top part of texture
+            } else {
+                vTop = splitV; // Base uses bottom part of texture
+            }
+        }
+
+        const ndx = positions.length / 3;
+        const brightness = faceBrightness[face.fi];
+        for (const { pos, uv } of face.corners) {
+            positions.push(pos[0], pos[1], pos[2]);
+            normals.push(face.dir[0], face.dir[1], face.dir[2]);
+            colors.push(brightness, brightness, brightness);
+            // uv[1] == 0 is bottom corner of the face, uv[1] == 1 is top corner of the face
+            uvs.push(uv[0] === 0 ? u0 : u1, uv[1] === 0 ? vBottom : vTop);
+        }
+        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+    }
+}
 
 self.onmessage = function (e) {
     const { cellX, cellY, cellZ, chunkSize, chunkData, neighborData } = e.data;
@@ -233,113 +400,169 @@ self.onmessage = function (e) {
                 }
 
                 if (voxel === 55) { // Cactus
-                    const minX = x + 1 / 16, maxX = x + 15 / 16;
-                    const minY = y, maxY = y + 1;
-                    const minZ = z + 1 / 16, maxZ = z + 15 / 16;
-
-                    const cactusFaces = [
-                        { dir: [-1, 0, 0], corners: [{ pos: [minX, maxY, minZ], uv: [0, 1] }, { pos: [minX, minY, minZ], uv: [0, 0] }, { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [minX, minY, maxZ], uv: [1, 0] }] },
-                        { dir: [1, 0, 0], corners: [{ pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, maxY, minZ], uv: [1, 1] }, { pos: [maxX, minY, minZ], uv: [1, 0] }] },
-                        { dir: [0, -1, 0], corners: [{ pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, minZ], uv: [1, 1] }, { pos: [minX, minY, minZ], uv: [0, 1] }] },
-                        { dir: [0, 1, 0], corners: [{ pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 0] }] },
-                        { dir: [0, 0, -1], corners: [{ pos: [maxX, minY, minZ], uv: [0, 0] }, { pos: [minX, minY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 1] }] },
-                        { dir: [0, 0, 1], corners: [{ pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, maxY, maxZ], uv: [1, 1] }] },
-                    ];
-
-                    for (let faceIndex = 0; faceIndex < 6; faceIndex++) {
-                        const { dir, corners } = cactusFaces[faceIndex];
-                        const [texU, texV] = getBlockTextureCoords(voxel, faceIndex);
-                        const u0 = (texU * tileSize) / tileTextureWidth + halfPixel;
-                        const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
-                        const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
-                        const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
-
-                        const ndx = positions.length / 3;
-                        for (let i = 0; i < 4; i++) {
-                            const { pos, uv } = corners[i];
-                            positions.push(pos[0], pos[1], pos[2]);
-                            normals.push(dir[0], dir[1], dir[2]);
-
-                            const brightness = faceBrightness[faceIndex];
-                            colors.push(brightness, brightness, brightness);
-
-                            const mappedU = uv[0] === 0 ? u0 : u1;
-                            const mappedV = uv[1] === 0 ? v0 : v1;
-                            uvs.push(mappedU, mappedV);
-                        }
-                        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-                    }
+                    addBoxMesh(x, y, z, x + 1 / 16, y, z + 1 / 16, x + 15 / 16, y + 1, z + 15 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
                     continue;
                 }
 
                 if (voxel === 54) { // Lantern
-                    const minX = x + 4 / 16, maxX = x + 12 / 16;
-                    const minY = y, maxY = y + 12 / 16;
-                    const minZ = z + 4 / 16, maxZ = z + 12 / 16;
+                    // Main body
+                    addBoxMesh(x, y, z, x + 4 / 16, y, z + 4 / 16, x + 12 / 16, y + 12 / 16, z + 12 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    // Chain
+                    addBoxMesh(x, y, z, x + 7 / 16, y + 12 / 16, z + 7 / 16, x + 9 / 16, y + 1, z + 9 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
 
-                    const lanternFaces = [
-                        { dir: [-1, 0, 0], corners: [{ pos: [minX, maxY, minZ], uv: [0, 1] }, { pos: [minX, minY, minZ], uv: [0, 0] }, { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [minX, minY, maxZ], uv: [1, 0] }] },
-                        { dir: [1, 0, 0], corners: [{ pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, maxY, minZ], uv: [1, 1] }, { pos: [maxX, minY, minZ], uv: [1, 0] }] },
-                        { dir: [0, -1, 0], corners: [{ pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, minZ], uv: [1, 1] }, { pos: [minX, minY, minZ], uv: [0, 1] }] },
-                        { dir: [0, 1, 0], corners: [{ pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 0] }] },
-                        { dir: [0, 0, -1], corners: [{ pos: [maxX, minY, minZ], uv: [0, 0] }, { pos: [minX, minY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 1] }] },
-                        { dir: [0, 0, 1], corners: [{ pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, maxY, maxZ], uv: [1, 1] }] },
-                    ];
+                // ===== Phase 2 Custom Meshes =====
 
+                if (voxel === 18 || voxel === 82) { // Chest or Chest Open
+                    let minX = x + 1 / 16, maxX = x + 15 / 16;
+                    let minZ = z + 1 / 16, maxZ = z + 15 / 16;
+
+                    // Check neighbors to seamlessly join double chests
+                    const nxp = getVoxel(x + 1, y, z);
+                    const nxn = getVoxel(x - 1, y, z);
+                    const nzp = getVoxel(x, y, z + 1);
+                    const nzn = getVoxel(x, y, z - 1);
+
+                    if (nxp === 18 || nxp === 82) maxX = x + 1;
+                    if (nxn === 18 || nxn === 82) minX = x;
+                    if (nzp === 18 || nzp === 82) maxZ = z + 1;
+                    if (nzn === 18 || nzn === 82) minZ = z;
+
+                    if (voxel === 18) { // Closed
+                        _addChestPartMesh(x, y, z, minX, y, minZ, maxX, y + 10 / 16, maxZ,
+                            positions, normals, uvs, indices, colors,
+                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, false);
+                        _addChestPartMesh(x, y, z, minX, y + 10 / 16, minZ, maxX, y + 14 / 16, maxZ,
+                            positions, normals, uvs, indices, colors,
+                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, true);
+                    } else { // Open
+                        _addChestPartMesh(x, y, z, minX, y, minZ, maxX, y + 10 / 16, maxZ,
+                            positions, normals, uvs, indices, colors,
+                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, false);
+                        _addChestPartMesh(x, y, z, minX, y + 10 / 16, z + 11 / 16, maxX, y + 24 / 16, z + 15 / 16,
+                            positions, normals, uvs, indices, colors,
+                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, true);
+                    }
+                    continue;
+                }
+
+                if (voxel === 70 || voxel === 78) { // Door closed (bottom or top)
+                    // Hinge on z=0, door extends along z, flat against x
+                    addBoxMesh(x, y, z, x, y, z, x + 3 / 16, y + 1, z + 1, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 79 || voxel === 80) { // Door open (bottom or top)
+                    // Swing open 90 degrees (flat against z)
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 1, z + 3 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 71) { // Fence — center post + rails
+                    // Center post (4/16 × 16/16 × 4/16)
+                    addBoxMesh(x, y, z, x + 6 / 16, y, z + 6 / 16, x + 10 / 16, y + 1, z + 10 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    // Top rail
+                    addBoxMesh(x, y, z, x, y + 12 / 16, z + 7 / 16, x + 1, y + 15 / 16, z + 9 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    // Bottom rail
+                    addBoxMesh(x, y, z, x, y + 6 / 16, z + 7 / 16, x + 1, y + 9 / 16, z + 9 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 72) { // Ladder — flat plane on back face
                     const [texU, texV] = getBlockTextureCoords(voxel, 0);
                     const u0 = (texU * tileSize) / tileTextureWidth + halfPixel;
                     const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
                     const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
                     const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
 
-                    // Lantern model uses partial bounding box mapping
-                    for (let faceIndex = 0; faceIndex < 6; faceIndex++) {
-                        const { dir, corners } = lanternFaces[faceIndex];
-                        const ndx = positions.length / 3;
-                        for (let i = 0; i < 4; i++) {
-                            const { pos, uv } = corners[i];
-                            positions.push(pos[0], pos[1], pos[2]);
-                            normals.push(dir[0], dir[1], dir[2]);
-
-                            const brightness = faceBrightness[faceIndex];
-                            colors.push(brightness, brightness, brightness);
-
-                            // Map front/side 4-12 to the texture appropriately
-                            const mappedU = uv[0] === 0 ? u0 + (u1 - u0) * (4 / 16) : u0 + (u1 - u0) * (12 / 16);
-                            const mappedV = uv[1] === 0 ? v0 : v0 + (v1 - v0) * (12 / 16);
-                            uvs.push(mappedU, mappedV);
-                        }
-                        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-                    }
-
-                    // Lantern Chain (Top part)
-                    const chainMinX = x + 7 / 16, chainMaxX = x + 9 / 16;
-                    const chainMinY = y + 12 / 16, chainMaxY = y + 1;
-                    const chainMinZ = z + 7 / 16, chainMaxZ = z + 9 / 16;
-
-                    const chainFaces = [
-                        { dir: [-1, 0, 0], corners: [{ pos: [chainMinX, chainMaxY, chainMinZ], uv: [0, 1] }, { pos: [chainMinX, chainMinY, chainMinZ], uv: [0, 0] }, { pos: [chainMinX, chainMaxY, chainMaxZ], uv: [1, 1] }, { pos: [chainMinX, chainMinY, chainMaxZ], uv: [1, 0] }] },
-                        { dir: [1, 0, 0], corners: [{ pos: [chainMaxX, chainMaxY, chainMaxZ], uv: [0, 1] }, { pos: [chainMaxX, chainMinY, chainMaxZ], uv: [0, 0] }, { pos: [chainMaxX, chainMaxY, chainMinZ], uv: [1, 1] }, { pos: [chainMaxX, chainMinY, chainMinZ], uv: [1, 0] }] },
-                        { dir: [0, 0, -1], corners: [{ pos: [chainMaxX, chainMinY, chainMinZ], uv: [0, 0] }, { pos: [chainMinX, chainMinY, chainMinZ], uv: [1, 0] }, { pos: [chainMaxX, chainMaxY, chainMinZ], uv: [0, 1] }, { pos: [chainMinX, chainMaxY, chainMinZ], uv: [1, 1] }] },
-                        { dir: [0, 0, 1], corners: [{ pos: [chainMinX, chainMinY, chainMaxZ], uv: [0, 0] }, { pos: [chainMaxX, chainMinY, chainMaxZ], uv: [1, 0] }, { pos: [chainMinX, chainMaxY, chainMaxZ], uv: [0, 1] }, { pos: [chainMaxX, chainMaxY, chainMaxZ], uv: [1, 1] }] },
-                    ];
-
-                    for (let faceIndex = 0; faceIndex < 4; faceIndex++) {
-                        const { dir, corners } = chainFaces[faceIndex];
-                        const ndx = positions.length / 3;
-                        for (let i = 0; i < 4; i++) {
-                            const { pos, uv } = corners[i];
-                            positions.push(pos[0], pos[1], pos[2]);
-                            normals.push(dir[0], dir[1], dir[2]);
-                            colors.push(0.3, 0.3, 0.3);
-                            uvs.push(u0, v0); // Doesn't matter, small black dot
-                        }
-                        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-                    }
-
+                    const lz = z + 1 / 16; // Against back wall
+                    // Front face
+                    let ndx = positions.length / 3;
+                    positions.push(x, y, lz, x + 1, y, lz, x, y + 1, lz, x + 1, y + 1, lz);
+                    normals.push(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1);
+                    colors.push(0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9);
+                    uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+                    indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                    // Back face
+                    ndx = positions.length / 3;
+                    positions.push(x + 1, y, lz - 0.01, x, y, lz - 0.01, x + 1, y + 1, lz - 0.01, x, y + 1, lz - 0.01);
+                    normals.push(0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1);
+                    colors.push(0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7);
+                    uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+                    indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
                     continue;
                 }
 
+                if (voxel === 73) { // Slab — half-height block (bottom half)
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 0.5, z + 1, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 74) { // Stairs — L-shape (bottom slab + top half)
+                    // Bottom full slab
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 0.5, z + 1, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    // Top back half
+                    addBoxMesh(x, y, z, x, y + 0.5, z + 0.5, x + 1, y + 1, z + 1, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 75) { // Sign — board + post
+                    // Board (thin, centered, upper half)
+                    addBoxMesh(x, y, z, x, y + 0.5, z + 7 / 16, x + 1, y + 1, z + 9 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    // Post (small stick below)
+                    addBoxMesh(x, y, z, x + 7 / 16, y, z + 7 / 16, x + 9 / 16, y + 0.5, z + 9 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 76) { // Trapdoor — flat plane on bottom
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 3 / 16, z + 1, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 81) { // Trapdoor Open — flat against wall
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 1, z + 3 / 16, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                if (voxel === 77) { // Bed — low raised platform
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 9 / 16, z + 1, voxel,
+                        positions, normals, uvs, indices, colors,
+                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    continue;
+                }
+
+                // ===== Standard block face rendering =====
                 for (let faceIndex = 0; faceIndex < 6; faceIndex++) {
                     const { dir, corners } = faces[faceIndex];
                     const neighbor = getVoxel(voxelX + dir[0], voxelY + dir[1], voxelZ + dir[2]);

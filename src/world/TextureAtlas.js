@@ -452,27 +452,48 @@ export function createTextureAtlas() {
 
     // ======== ROW 11 — Phase 2 Custom Shape Block Textures ========
 
-    // 70. Oak Door [0, 11]
+    // 70. Oak Door Bottom [0, 11]
     {
         const x = 0, y = 11 * 16;
         ctx.clearRect(x, y, 16, 16);
         ctx.fillStyle = '#b88f58';
         ctx.fillRect(x, y, 16, 16);
-        // Panels
+        // Panel
         ctx.fillStyle = '#997444';
-        ctx.fillRect(x + 2, y + 1, 12, 6);
-        ctx.fillRect(x + 2, y + 9, 12, 6);
-        // Panel insets
+        ctx.fillRect(x + 2, y + 2, 12, 12);
+        // Panel inset
         ctx.fillStyle = '#a08050';
-        ctx.fillRect(x + 3, y + 2, 10, 4);
-        ctx.fillRect(x + 3, y + 10, 10, 4);
+        ctx.fillRect(x + 3, y + 3, 10, 10);
+        // Hinge
+        ctx.fillStyle = '#555555';
+        ctx.fillRect(x + 1, y + 6, 1, 4);
+        ctx.fillRect(x, y + 15, 16, 1); // bottom edge
+    }
+
+    // 78. Oak Door Top [0, 12]
+    {
+        const x = 0, y = 12 * 16;
+        ctx.clearRect(x, y, 16, 16);
+        ctx.fillStyle = '#b88f58';
+        ctx.fillRect(x, y, 16, 16);
+        // Panel
+        ctx.fillStyle = '#997444';
+        ctx.fillRect(x + 2, y + 2, 12, 12);
+        // Panel inset / Window
+        ctx.fillStyle = 'rgba(200, 220, 255, 0.4)'; // glass
+        ctx.fillRect(x + 3, y + 3, 10, 5);
+        ctx.fillStyle = '#a08050';
+        ctx.fillRect(x + 3, y + 9, 10, 5);
+        // Window framing
+        ctx.fillStyle = '#997444';
+        ctx.fillRect(x + 7, y + 3, 2, 5); // vertical mullion
+
         // Handle
         ctx.fillStyle = '#444444';
-        ctx.fillRect(x + 12, y + 8, 2, 2);
-        // Hinges
+        ctx.fillRect(x + 12, y + 12, 2, 3);
+        // Hinge
         ctx.fillStyle = '#555555';
-        ctx.fillRect(x + 1, y + 3, 1, 2);
-        ctx.fillRect(x + 1, y + 11, 1, 2);
+        ctx.fillRect(x + 1, y + 6, 1, 4);
     }
 
     // 71. Fence [1, 11]
@@ -577,6 +598,67 @@ export function createTextureAtlas() {
         // Wood frame detail
         ctx.fillStyle = '#6b5020';
         ctx.fillRect(x, y + 14, 16, 2);
+    }
+
+    // 77. Chest Side [7, 11]
+    {
+        const x = 7 * 16, y = 11 * 16;
+        ctx.clearRect(x, y, 16, 16);
+        ctx.fillStyle = '#b88f58';
+        ctx.fillRect(x, y, 16, 16);
+        ctx.fillStyle = '#4a3219'; // border
+        ctx.fillRect(x, y, 16, 1);
+        ctx.fillRect(x, y + 15, 16, 1);
+        ctx.fillRect(x, y, 1, 16);
+        ctx.fillRect(x + 15, y, 1, 16);
+        // lines
+        ctx.fillStyle = '#997444';
+        ctx.fillRect(x + 1, y + 1, 14, 14);
+        ctx.fillStyle = '#7a5a30';
+        for (let i = 3; i < 15; i += 3) ctx.fillRect(x + 1, y + i, 14, 1);
+    }
+
+    // 78. Chest Front [8, 11]
+    {
+        const x = 8 * 16, y = 11 * 16;
+        ctx.clearRect(x, y, 16, 16);
+        ctx.fillStyle = '#b88f58';
+        ctx.fillRect(x, y, 16, 16);
+        ctx.fillStyle = '#4a3219'; // border
+        ctx.fillRect(x, y, 16, 1);
+        ctx.fillRect(x, y + 15, 16, 1);
+        ctx.fillRect(x, y, 1, 16);
+        ctx.fillRect(x + 15, y, 1, 16);
+        ctx.fillRect(x, y + 4, 16, 1); // lid separation
+        // lines
+        ctx.fillStyle = '#997444';
+        ctx.fillRect(x + 1, y + 1, 14, 3);
+        ctx.fillRect(x + 1, y + 5, 14, 10);
+        ctx.fillStyle = '#7a5a30';
+        for (let i = 2; i < 15; i += 3) ctx.fillRect(x + 1, y + i, 14, 1);
+        // Latch
+        ctx.fillStyle = '#888888';
+        ctx.fillRect(x + 7, y + 3, 2, 4);
+        ctx.fillStyle = '#cccccc';
+        ctx.fillRect(x + 7, y + 3, 1, 3);
+    }
+
+    // 79. Chest Top [9, 11]
+    {
+        const x = 9 * 16, y = 11 * 16;
+        ctx.clearRect(x, y, 16, 16);
+        ctx.fillStyle = '#b88f58';
+        ctx.fillRect(x, y, 16, 16);
+        ctx.fillStyle = '#4a3219'; // border
+        ctx.fillRect(x, y, 16, 1);
+        ctx.fillRect(x, y + 15, 16, 1);
+        ctx.fillRect(x, y, 1, 16);
+        ctx.fillRect(x + 15, y, 1, 16);
+        // lines
+        ctx.fillStyle = '#997444';
+        ctx.fillRect(x + 1, y + 1, 14, 14);
+        ctx.fillStyle = '#7a5a30';
+        for (let i = 3; i < 15; i += 3) ctx.fillRect(x + i, y + 1, 1, 14);
     }
 
 

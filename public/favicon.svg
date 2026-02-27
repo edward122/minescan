@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Isometric 3D Grass Block -->
+  <g transform="translate(128, 118)">
+    
+    <!-- Top Face (Grass) -->
+    <polygon points="0,-100 86.60,-50 0,0 -86.60,-50" fill="#8BC34A" />
+    <!-- Bright inner highlight for top face -->
+    <polygon points="0,-96 82,-49 0,-3 -82,-49" fill="rgba(255,255,255,0.15)" />
+    
+    <!-- Right Face (Dirt) -->
+    <polygon points="0,0 86.60,-50 86.60,50 0,100" fill="#5D4037" />
+    
+    <!-- Left Face (Dirt) -->
+    <polygon points="-86.60,-50 0,0 0,100 -86.60,50" fill="#795548" />
+    
+    <!-- Dirt Texture Accents (Left Face) -->
+    <polygon points="-20,20 -10,25.77 -10,35.77 -20,30" fill="#5D4037" />
+    <polygon points="-50,-5 -40,0.77 -40,10.77 -50,5" fill="#5D4037" />
+    <polygon points="-75,10 -65,15.77 -65,25.77 -75,20" fill="#8D6E63" />
+    <polygon points="-30,60 -20,65.77 -20,75.77 -30,70" fill="#8D6E63" />
+    
+    <!-- Dirt Texture Accents (Right Face) -->
+    <polygon points="20,10 30,4.23 30,14.23 20,20" fill="#4E342E" />
+    <polygon points="45,45 55,39.23 55,49.23 45,55" fill="#3E2723" />
+    <polygon points="65,10 75,4.23 75,14.23 65,20" fill="#795548" />
+
+    <!-- Grass Overhang Left -->
+    <path d="M -86.60,-50 L 0,0 L 0,20 L -21.65,5 L -43.30,15 L -64.95,-10 L -86.60,-20 Z" fill="#689F38" />
+    <!-- Left Overhang Shadow overlay -->
+    <path d="M -86.60,-50 L 0,0 L 0,20 L -21.65,5 L -43.30,15 L -64.95,-10 L -86.60,-20 Z" fill="rgba(0,0,0,0.1)" />
+    
+    <!-- Grass Overhang Right -->
+    <path d="M 0,0 L 86.60,-50 L 86.60,-30 L 64.95,-5 L 43.30,-15 L 21.65,10 L 0,20 Z" fill="#558B2F" />
+    <!-- Right Overhang Shadow overlay -->
+    <path d="M 0,0 L 86.60,-50 L 86.60,-30 L 64.95,-5 L 43.30,-15 L 21.65,10 L 0,20 Z" fill="rgba(0,0,0,0.25)" />
+
+  </g>
+</svg>

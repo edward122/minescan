@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BlockRegistry } from '../world/BlockRegistry.js';
+import { BlockRegistry, getMaxDurability } from '../world/BlockRegistry.js';
 import { Recipes } from './RecipeRegistry.js';
 
 export class InventoryUI {
@@ -32,10 +32,12 @@ export class InventoryUI {
         this.playerCraftingPanel = document.getElementById('player-crafting-panel');
         this.tableCraftingPanel = document.getElementById('table-crafting-panel');
         this.furnacePanel = document.getElementById('furnace-panel');
+        this.chestPanel = document.getElementById('chest-panel');
 
-        // Crafting Grids
+        // Crafting Grids & Chest Grid
         this.playerCraftingGrid = document.getElementById('player-crafting-grid');
         this.tableCraftingGrid = document.getElementById('table-crafting-grid');
+        this.chestGrid = document.getElementById('chest-grid');
         this.playerCraftingResult = document.getElementById('player-crafting-result');
         this.tableCraftingResult = document.getElementById('table-crafting-result');
 
@@ -64,6 +66,14 @@ export class InventoryUI {
         this.previewYaw = 0;
         this.isPreviewDragging = false;
         this.previewLastP = { x: 0, y: 0 };
+
+        // Item drop callback — set by main.js: (itemId, count) => void
+        this.onDropItem = null;
+
+        // Q-key drop state (hold-to-drop-continuously)
+        this._qDropHeld = false;
+        this._qDropTimer = 0;
+        this._qDropInterval = null;
 
         this.initDOM();
         this.initPreview3D();
@@ -99,6 +109,11 @@ export class InventoryUI {
             this.tableCraftingGrid.appendChild(this.createSlotElement('crafting_3x3', i));
         }
         this.setupSlotElement(this.tableCraftingResult, 'result_3x3', 0);
+
+        // Furnace
+        this.setupSlotElement(this.furnaceInputSlot, 'furnace_input', 0);
+        this.setupSlotElement(this.furnaceFuelSlot, 'furnace_fuel', 0);
+        this.setupSlotElement(this.furnaceResultSlot, 'furnace_result', 0);
 
         // Furnace
         this.setupSlotElement(this.furnaceInputSlot, 'furnace_input', 0);
@@ -449,11 +464,85 @@ export class InventoryUI {
                 this.toggleInventory();
             }
 
-            if (!this.isOpen && e.code.startsWith('Digit') && e.code !== 'Digit0') {
+            // --- Q-Key Item Drop ---
+            if (e.code === 'KeyQ' && !e.repeat) {
+                if (this.isOpen) {
+                    // Inventory is open
+                    if (this.draggedItem) {
+                        // Holding an item on cursor — drop 1 from it
+                        this._dropOneFromDragged();
+                    } else if (this.hoveredType !== null) {
+                        // Hovering a slot — drop 1 from hovered slot
+                        this._dropOneFromSlot(this.hoveredType, this.hoveredIndex);
+                    }
+                } else if (this.inputManager.isLocked) {
+                    // Game mode — drop from active hotbar slot
+                    if (e.ctrlKey || e.metaKey) {
+                        // Ctrl+Q: drop entire stack
+                        this._dropEntireStack(this.inventory.activeHotbarIndex);
+                    } else {
+                        // Q: drop 1 item, start hold-to-drop timer
+                        this._dropOneFromSlot('inventory', this.inventory.activeHotbarIndex);
+                        this._qDropHeld = true;
+                        this._qDropTimer = 0;
+                        if (this._qDropInterval) clearInterval(this._qDropInterval);
+                        this._qDropInterval = setInterval(() => {
+                            if (this._qDropHeld) {
+                                this._dropOneFromSlot('inventory', this.inventory.activeHotbarIndex);
+                            } else {
+                                clearInterval(this._qDropInterval);
+                                this._qDropInterval = null;
+                            }
+                        }, 200);
+                    }
+                }
+            }
+
+            // --- Number keys: select hotbar OR move dragged item to hotbar slot ---
+            if (e.code.startsWith('Digit') && e.code !== 'Digit0') {
                 const num = parseInt(e.code.replace('Digit', ''));
                 if (num >= 1 && num <= 9) {
-                    this.inventory.activeHotbarIndex = num - 1;
-                    this.render();
+                    if (this.isOpen && this.draggedItem) {
+                        // Move dragged item to hotbar slot (swap if occupied)
+                        const hotbarIndex = num - 1;
+                        const existingItem = this.inventory.getSlot(hotbarIndex);
+                        this.inventory.setSlot(hotbarIndex, this.draggedItem);
+                        if (existingItem) {
+                            const isSourceResult = this.draggedType.startsWith('result') || this.draggedType === 'furnace_result';
+                            if (!isSourceResult) {
+                                this.setItemAt(this.draggedType, this.draggedIndex, existingItem);
+                            }
+                        }
+                        // Consume crafting ingredients if dragging from a result slot
+                        const isSourceResult = this.draggedType.startsWith('result') || this.draggedType === 'furnace_result';
+                        if (isSourceResult) {
+                            if (this.draggedType === 'result_2x2' || this.draggedType === 'result_3x3') {
+                                this.inventory.consumeCraftingIngredients(this.draggedType === 'result_3x3');
+                            } else if (this.draggedType === 'furnace_result') {
+                                this.inventory.setFurnaceSlot('result', null);
+                            }
+                        }
+                        // Clean up drag state
+                        this.draggedItem = null;
+                        this.draggedType = null;
+                        this.draggedIndex = null;
+                        if (this.dragElement) { this.dragElement.remove(); this.dragElement = null; }
+                        this.render();
+                    } else if (!this.isOpen) {
+                        this.inventory.activeHotbarIndex = num - 1;
+                        this.render();
+                    }
+                }
+            }
+        });
+
+        // Q-key release: stop hold-to-drop
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'KeyQ') {
+                this._qDropHeld = false;
+                if (this._qDropInterval) {
+                    clearInterval(this._qDropInterval);
+                    this._qDropInterval = null;
                 }
             }
         });
@@ -472,9 +561,9 @@ export class InventoryUI {
             }
         });
 
-        window.addEventListener('mouseup', () => {
+        window.addEventListener('mouseup', (e) => {
             this.isPreviewDragging = false;
-            this.onGlobalMouseUp();
+            this.onGlobalMouseUp(e);
         });
         window.addEventListener('mousemove', (e) => {
             if (this.isPreviewDragging) {
@@ -514,6 +603,40 @@ export class InventoryUI {
         this.openUI();
     }
 
+    openChest(chestPos, chestPos2 = null) {
+        this.mode = 'chest';
+        this.inventoryTitle.textContent = chestPos2 ? 'Large Chest' : 'Chest';
+        this.activeChestPos = chestPos;
+        this.activeChestPos2 = chestPos2;
+        const chestId = `${chestPos.x},${chestPos.y},${chestPos.z}`;
+
+        if (!window.chestInventories) window.chestInventories = new Map();
+
+        if (!window.chestInventories.has(chestId)) {
+            window.chestInventories.set(chestId, new Array(27).fill(null));
+        }
+        this.activeChest = window.chestInventories.get(chestId);
+
+        if (chestPos2) {
+            const chestId2 = `${chestPos2.x},${chestPos2.y},${chestPos2.z}`;
+            if (!window.chestInventories.has(chestId2)) {
+                window.chestInventories.set(chestId2, new Array(27).fill(null));
+            }
+            this.activeChest2 = window.chestInventories.get(chestId2);
+        } else {
+            this.activeChest2 = null;
+        }
+
+        // Rebuild DOM slots
+        this.chestGrid.innerHTML = '';
+        const totalSlots = chestPos2 ? 54 : 27;
+        for (let i = 0; i < totalSlots; i++) {
+            this.chestGrid.appendChild(this.createSlotElement('chest', i));
+        }
+
+        this.openUI();
+    }
+
     openUI() {
         this.isOpen = true;
         document.exitPointerLock();
@@ -524,9 +647,17 @@ export class InventoryUI {
         this.playerCraftingPanel.classList.toggle('hidden', this.mode !== 'player');
         this.tableCraftingPanel.classList.toggle('hidden', this.mode !== 'table');
         this.furnacePanel.classList.toggle('hidden', this.mode !== 'furnace');
+        this.chestPanel.classList.toggle('hidden', this.mode !== 'chest');
 
         // Show/Hide player preview ONLY in 'player' mode
         this.playerPreviewPanel.classList.toggle('hidden', this.mode !== 'player');
+
+        // Show Recipe Book only in 'player' or 'table' mode
+        const showRecipes = this.mode === 'player' || this.mode === 'table';
+        this.recipeBookBtn.classList.toggle('hidden', !showRecipes);
+        if (!showRecipes) {
+            this.recipeBookPanel.classList.add('hidden');
+        }
 
         this.populateRecipeList(); // Re-populate for 2x2 vs 3x3 filter
         this.render();
@@ -544,6 +675,16 @@ export class InventoryUI {
         this.isOpen = false;
         this.uiLayer.classList.add('hidden');
         this.inventoryScreen.classList.add('hidden');
+
+        if (this.mode === 'chest' && this.activeChestPos) {
+            if (typeof window.onChestClosed === 'function') {
+                window.onChestClosed(this.activeChestPos, this.activeChestPos2);
+            }
+            this.activeChest = null;
+            this.activeChest2 = null;
+            this.activeChestPos = null;
+            this.activeChestPos2 = null;
+        }
 
         // Put dragged item back if closed mid-drag
         if (this.draggedItem) {
@@ -608,6 +749,10 @@ export class InventoryUI {
         const icon = element.querySelector('.item-icon');
         const count = element.querySelector('.item-count');
 
+        // Remove old durability bar if any
+        let durBar = element.querySelector('.durability-bar');
+        if (durBar) durBar.remove();
+
         if (previewItem) {
             const [u, v] = this.getTextureCoords(previewItem.id);
             icon.style.backgroundImage = `url(${window.ATLAS_DATA_URL})`;
@@ -624,6 +769,20 @@ export class InventoryUI {
             icon.style.opacity = '1.0';
             icon.style.imageRendering = 'pixelated';
             count.textContent = item.count > 1 ? item.count : '';
+
+            // Render durability bar for tools
+            const maxDur = getMaxDurability(item.id);
+            if (maxDur > 0 && item.durability !== undefined && item.durability < maxDur) {
+                durBar = document.createElement('div');
+                durBar.className = 'durability-bar';
+                const pct = item.durability / maxDur;
+                durBar.style.cssText = `position:absolute;bottom:2px;left:2px;right:2px;height:3px;background:#333;border-radius:1px;overflow:hidden;`;
+                const fill = document.createElement('div');
+                const r = Math.round(255 * (1 - pct)), g = Math.round(255 * pct);
+                fill.style.cssText = `width:${pct * 100}%;height:100%;background:rgb(${r},${g},0);`;
+                durBar.appendChild(fill);
+                element.appendChild(durBar);
+            }
         } else {
             icon.style.backgroundImage = 'none';
             icon.style.opacity = '1.0';
@@ -637,8 +796,20 @@ export class InventoryUI {
         }
     }
 
+    updateHotbar() {
+        Array.from(this.hotbarContainer.children).forEach((slotEl, i) => {
+            this.updateSlotDOM(slotEl, this.inventory.getSlot(i), i === this.inventory.activeHotbarIndex);
+        });
+    }
+
     getItemAt(type, index) {
         if (type === 'inventory') return this.inventory.getSlot(index);
+
+        if (type === 'chest') {
+            if (index < 27 && this.activeChest) return this.activeChest[index];
+            if (index >= 27 && this.activeChest2) return this.activeChest2[index - 27];
+            return null;
+        }
 
         if (type === 'crafting_2x2') {
             // Map 0,1,2,3 -> 0,1,3,4
@@ -658,6 +829,20 @@ export class InventoryUI {
 
     setItemAt(type, index, item) {
         if (type === 'inventory') this.inventory.setSlot(index, item);
+
+        if (type === 'chest') {
+            if (index < 27 && this.activeChest) {
+                this.activeChest[index] = item;
+                if (typeof window.onChestSlotUpdated === 'function') {
+                    window.onChestSlotUpdated(this.activeChestPos, index, item);
+                }
+            } else if (index >= 27 && this.activeChest2) {
+                this.activeChest2[index - 27] = item;
+                if (typeof window.onChestSlotUpdated === 'function') {
+                    window.onChestSlotUpdated(this.activeChestPos2, index - 27, item);
+                }
+            }
+        }
 
         if (type === 'crafting_2x2') {
             const mapObj = { 0: 0, 1: 1, 2: 3, 3: 4 };
@@ -759,7 +944,75 @@ export class InventoryUI {
             this.furnaceProgressFg.style.width = `${this.inventory.smeltProgress * 100}%`;
         }
 
+        if (this.mode === 'chest') {
+            Array.from(this.chestGrid.children).forEach((slotEl, i) => {
+                const item = (this.draggedType === 'chest' && this.draggedIndex === i) ? null : this.getItemAt('chest', i);
+                this.updateSlotDOM(slotEl, item, false);
+            });
+        }
+
         this.updateRecipeListAvailability();
+    }
+
+    // --- Item Drop Helpers ---
+
+    /** Drop 1 item from a specific slot type/index into the world */
+    _dropOneFromSlot(type, index) {
+        if (!this.onDropItem) return;
+        const item = this.getItemAt(type, index);
+        if (!item || item.count <= 0) return;
+
+        // Remove 1 from the slot FIRST (anti-dupe: remove before spawn)
+        item.count -= 1;
+        const itemId = item.id;
+        if (item.count <= 0) {
+            this.setItemAt(type, index, null);
+        }
+
+        // Emit the drop
+        this.onDropItem(itemId, 1);
+        this.render();
+    }
+
+    /** Drop 1 item from the currently dragged (cursor-held) item */
+    _dropOneFromDragged() {
+        if (!this.onDropItem || !this.draggedItem) return;
+
+        const itemId = this.draggedItem.id;
+        this.draggedItem.count -= 1;
+
+        this.onDropItem(itemId, 1);
+
+        if (this.draggedItem.count <= 0) {
+            this.draggedItem = null;
+            if (this.dragElement) { this.dragElement.remove(); this.dragElement = null; }
+            this.draggedType = null;
+            this.draggedIndex = null;
+        } else {
+            // Update drag element count
+            if (this.dragElement) {
+                const countEl = this.dragElement.querySelector('.item-count');
+                if (countEl) countEl.textContent = this.draggedItem.count > 1 ? this.draggedItem.count : '';
+            }
+        }
+        this.render();
+    }
+
+    /** Drop an entire stack from an inventory slot */
+    _dropEntireStack(slotIndex) {
+        if (!this.onDropItem) return;
+        const item = this.inventory.getSlot(slotIndex);
+        if (!item || item.count <= 0) return;
+
+        const itemId = item.id;
+        const count = item.count;
+
+        // Remove the entire slot FIRST (anti-dupe)
+        this.inventory.setSlot(slotIndex, null);
+
+        // Emit the drop
+        this.onDropItem(itemId, count);
+        this.render();
     }
 
     // Drag and drop logic
@@ -927,6 +1180,33 @@ export class InventoryUI {
                 }
             }
 
+            // If we are in chest mode and shifting from inventory
+            if (!moved && this.mode === 'chest') {
+                const chestSize = this.activeChest2 ? 54 : 27;
+                for (let i = 0; i < chestSize; i++) {
+                    const existing = this.getItemAt('chest', i);
+                    if (!existing) {
+                        this.setItemAt('chest', i, { ...item });
+                        this.setItemAt(sourceType, sourceIndex, null);
+                        moved = true;
+                        break;
+                    } else if (existing.id === item.id && existing.count < 64) {
+                        const space = 64 - existing.count;
+                        if (space >= item.count) {
+                            existing.count += item.count;
+                            this.setItemAt('chest', i, existing);
+                            this.setItemAt(sourceType, sourceIndex, null);
+                            moved = true;
+                            break;
+                        } else {
+                            existing.count = 64;
+                            item.count -= space;
+                            this.setItemAt('chest', i, existing);
+                        }
+                    }
+                }
+            }
+
             // Quick transfer between hotbar/inventory
             if (!moved) {
                 if (sourceIndex < 9) {
@@ -957,10 +1237,8 @@ export class InventoryUI {
     }
 
     onSlotMouseEnter(e, type, index) {
-        if (this.draggedItem) {
-            this.hoveredType = type;
-            this.hoveredIndex = index;
-        }
+        this.hoveredType = type;
+        this.hoveredIndex = index;
 
         // Show tooltip if item exists and we aren't dragging
         const item = this.getItemAt(type, index);
@@ -975,6 +1253,8 @@ export class InventoryUI {
     }
 
     onSlotMouseLeave(e) {
+        this.hoveredType = null;
+        this.hoveredIndex = null;
         this.tooltip.classList.add('hidden');
     }
 
@@ -999,7 +1279,7 @@ export class InventoryUI {
         }
     }
 
-    onGlobalMouseUp() {
+    onGlobalMouseUp(e) {
         if (this.draggedItem) {
             // We released the mouse. If it wasn't a right-click drop-1 action (which resolves immediately),
             // we should drop the whole stack here.
@@ -1073,13 +1353,30 @@ export class InventoryUI {
                     }
                 }
             } else {
-                // Dropped outside, or into result slot. Put it back to source.
-                if (!isSourceResult) {
-                    const original = this.getItemAt(this.draggedType, this.draggedIndex);
-                    if (original && original.id === this.draggedItem.id) {
-                        original.count += this.draggedItem.count;
-                    } else {
-                        this.setItemAt(this.draggedType, this.draggedIndex, this.draggedItem);
+                // Dropped outside a slot. Check if it's outside the whole inventory UI window
+                const isOutside = !e || (e.target && !e.target.closest('#inventory-screen'));
+
+                if (isOutside && this.isOpen && this.onDropItem) {
+                    // Item is already removed from source on drag start (anti-dupe safe).
+                    // For split drags, the remainder is still in the source slot — only drop what we're holding.
+                    this.onDropItem(this.draggedItem.id, this.draggedItem.count);
+                    // If it was a result drag, consume crafting ingredients
+                    if (isSourceResult) {
+                        if (this.draggedType === 'result_2x2' || this.draggedType === 'result_3x3') {
+                            this.inventory.consumeCraftingIngredients(this.draggedType === 'result_3x3');
+                        } else if (this.draggedType === 'furnace_result') {
+                            this.inventory.setFurnaceSlot('result', null);
+                        }
+                    }
+                } else {
+                    // Put it back (either dropped over UI but between slots, or no callback)
+                    if (!isSourceResult) {
+                        const original = this.getItemAt(this.draggedType, this.draggedIndex);
+                        if (original && original.id === this.draggedItem.id) {
+                            original.count += this.draggedItem.count;
+                        } else {
+                            this.setItemAt(this.draggedType, this.draggedIndex, this.draggedItem);
+                        }
                     }
                 }
             }

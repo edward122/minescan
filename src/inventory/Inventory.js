@@ -1,4 +1,4 @@
-import { Blocks } from '../world/BlockRegistry.js';
+import { Blocks, getMaxDurability } from '../world/BlockRegistry.js';
 import { RecipeRegistry } from './RecipeRegistry.js';
 
 export class Inventory {
@@ -80,6 +80,26 @@ export class Inventory {
                 this.slots[this.activeHotbarIndex] = null;
             }
             return true;
+        }
+        return false;
+    }
+
+    // Damage the tool in the active hotbar slot. Returns true if tool broke.
+    damageActiveTool() {
+        const item = this.slots[this.activeHotbarIndex];
+        if (!item) return false;
+        const maxDur = getMaxDurability(item.id);
+        if (maxDur <= 0) return false; // Not a tool
+
+        // Initialize durability if not set
+        if (item.durability === undefined) {
+            item.durability = maxDur;
+        }
+
+        item.durability -= 1;
+        if (item.durability <= 0) {
+            this.slots[this.activeHotbarIndex] = null;
+            return true; // Tool broke
         }
         return false;
     }

@@ -73,11 +73,16 @@ export const Blocks = {
     SIGN: 75,
     TRAPDOOR: 76,
     BED: 77,
+    OAK_DOOR_TOP: 78,
+    OAK_DOOR_BOTTOM_OPEN: 79,
+    OAK_DOOR_TOP_OPEN: 80,
+    TRAPDOOR_OPEN: 81,
+    CHEST_OPEN: 82,
 };
 
 // Map face directory identifiers to standard names
 // 0: left, 1: right, 2: bottom, 3: top, 4: back, 5: front
-const faceNames = ['side', 'side', 'bottom', 'top', 'side', 'side'];
+const faceNames = ['left', 'right', 'bottom', 'top', 'back', 'front'];
 
 // Tool durability by material
 const toolDurability = { wood: 60, stone: 132, iron: 251, gold: 33, diamond: 1562 };
@@ -102,7 +107,7 @@ export const BlockRegistry = {
     [Blocks.STICK]: { name: 'Stick', textures: { all: [0, 0] } },
     [Blocks.CRAFTING_TABLE]: { name: 'Crafting Table', hardness: 2.5, bestTool: 'axe', textures: { top: [8, 0], side: [4, 0], bottom: [8, 0] } },
     [Blocks.FURNACE]: { name: 'Furnace', hardness: 3.5, bestTool: 'pickaxe', textures: { front: [9, 0], side: [9, 0], top: [9, 0], bottom: [9, 0] } },
-    [Blocks.CHEST]: { name: 'Chest', hardness: 2.5, bestTool: 'axe', textures: { all: [8, 0] } },
+    [Blocks.CHEST]: { name: 'Chest', hardness: 2.5, bestTool: 'axe', transparent: true, textures: { top: [9, 11], bottom: [9, 11], side: [7, 11], front: [8, 11] } },
     [Blocks.TORCH]: { name: 'Torch', hardness: 0.0, transparent: true, noCollision: true, crossShape: true, emitLight: 15, textures: { all: [2, 1] } },
 
     // Tools — now with durability
@@ -165,14 +170,19 @@ export const BlockRegistry = {
     [Blocks.WOOL_BLACK]: { name: 'Black Wool', hardness: 0.8, textures: { all: [14, 4] } },
 
     // Phase 2 — Custom-shape blocks
-    [Blocks.OAK_DOOR]: { name: 'Oak Door', hardness: 3.0, bestTool: 'axe', transparent: true, isDoor: true, textures: { all: [0, 11] } },
+    [Blocks.OAK_DOOR]: { name: 'Oak Door', hardness: 3.0, bestTool: 'axe', transparent: true, isDoor: true, noCollision: true, textures: { all: [0, 11] } },
     [Blocks.OAK_FENCE]: { name: 'Oak Fence', hardness: 2.0, bestTool: 'axe', transparent: true, isFence: true, textures: { all: [1, 11] } },
     [Blocks.LADDER]: { name: 'Ladder', hardness: 0.4, bestTool: 'axe', transparent: true, noCollision: true, isLadder: true, climbable: true, textures: { all: [2, 11] } },
     [Blocks.OAK_SLAB]: { name: 'Oak Slab', hardness: 2.0, bestTool: 'axe', transparent: true, isSlab: true, halfBlock: true, textures: { all: [8, 0] } },
     [Blocks.OAK_STAIRS]: { name: 'Oak Stairs', hardness: 2.0, bestTool: 'axe', transparent: true, isStairs: true, textures: { all: [8, 0] } },
     [Blocks.SIGN]: { name: 'Sign', hardness: 1.0, bestTool: 'axe', transparent: true, noCollision: true, textures: { all: [3, 11] } },
-    [Blocks.TRAPDOOR]: { name: 'Trapdoor', hardness: 3.0, bestTool: 'axe', transparent: true, isTrapdoor: true, textures: { all: [4, 11] } },
+    [Blocks.TRAPDOOR]: { name: 'Trapdoor', hardness: 3.0, bestTool: 'axe', transparent: true, isTrapdoor: true, noCollision: true, textures: { all: [4, 11] } },
     [Blocks.BED]: { name: 'Bed', hardness: 0.2, transparent: true, isBed: true, textures: { top: [5, 11], side: [6, 11], bottom: [8, 0] } },
+    [Blocks.OAK_DOOR_TOP]: { name: 'Oak Door Top', hardness: 3.0, bestTool: 'axe', transparent: true, isDoor: true, noCollision: true, textures: { all: [0, 12] } },
+    [Blocks.OAK_DOOR_BOTTOM_OPEN]: { name: 'Oak Door Open', hardness: 3.0, bestTool: 'axe', transparent: true, isDoor: true, noCollision: true, textures: { all: [0, 11] } },
+    [Blocks.OAK_DOOR_TOP_OPEN]: { name: 'Oak Door Top Open', hardness: 3.0, bestTool: 'axe', transparent: true, isDoor: true, noCollision: true, textures: { all: [0, 12] } },
+    [Blocks.TRAPDOOR_OPEN]: { name: 'Trapdoor Open', hardness: 3.0, bestTool: 'axe', transparent: true, isTrapdoor: true, noCollision: true, textures: { all: [4, 11] } },
+    [Blocks.CHEST_OPEN]: { name: 'Chest Open', hardness: 2.5, bestTool: 'axe', transparent: true, textures: { top: [9, 11], bottom: [9, 11], side: [7, 11], front: [8, 11] } },
 };
 
 export function getBlockTextureCoords(voxel, faceIndex) {
@@ -182,6 +192,9 @@ export function getBlockTextureCoords(voxel, faceIndex) {
     const faceName = faceNames[faceIndex];
     if (blockDef.textures[faceName]) {
         return blockDef.textures[faceName];
+    }
+    if (blockDef.textures.side && (faceName === 'left' || faceName === 'right' || faceName === 'front' || faceName === 'back')) {
+        return blockDef.textures.side;
     }
     return blockDef.textures.all || [0, 0];
 }
@@ -196,6 +209,12 @@ export function isBlockNoCollision(voxel) {
     if (voxel === 0) return true;
     const blockDef = BlockRegistry[voxel];
     return blockDef ? !!blockDef.noCollision : false;
+}
+
+const customMeshBlocks = new Set([18, 19, 52, 54, 55, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82]);
+
+export function isBlockCustomMesh(voxel) {
+    return customMeshBlocks.has(voxel);
 }
 
 export function getBlockHardness(voxel) {

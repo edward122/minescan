@@ -1,5 +1,5 @@
 export class StorageManager {
-    constructor(dbName = 'minecraft_clone_db', version = 2) {
+    constructor(dbName = 'minecraft_clone_db', version = 3) {
         this.dbName = dbName;
         this.version = version;
         this.db = null;
@@ -19,6 +19,9 @@ export class StorageManager {
                 }
                 if (!db.objectStoreNames.contains('worlds')) {
                     db.createObjectStore('worlds', { keyPath: 'id' });
+                }
+                if (!db.objectStoreNames.contains('chest_inventories')) {
+                    db.createObjectStore('chest_inventories');
                 }
             };
 
@@ -78,6 +81,11 @@ export class StorageManager {
 
         // Delete all chunks with this worldId prefix
         await this._deleteByPrefix('chunks', worldId + '_');
+
+        // Delete all chests with this worldId prefix
+        if (this.db && this.db.objectStoreNames.contains('chest_inventories')) {
+            await this._deleteByPrefix('chest_inventories', worldId + '_');
+        }
     }
 
     // ---- Player State ----
@@ -100,6 +108,44 @@ export class StorageManager {
     async loadChunk(worldKey, chunkId) {
         const key = `${worldKey}_${chunkId}`;
         return this._get('chunks', key);
+    }
+
+    // ---- Chests ----
+
+    async saveChest(worldKey, chestId, data) {
+        const key = `${worldKey}_${chestId}`;
+        return this._put('chest_inventories', key, data);
+    }
+
+    async loadChest(worldKey, chestId) {
+        const key = `${worldKey}_${chestId}`;
+        return this._get('chest_inventories', key);
+    }
+
+    async loadAllChests(worldKey) {
+        return new Promise((resolve, reject) => {
+            if (!this.db) return reject("DB not initialized");
+            const transaction = this.db.transaction(['chest_inventories'], 'readonly');
+            const store = transaction.objectStore('chest_inventories');
+            const request = store.openCursor();
+
+            const chests = new Map();
+            const prefix = worldKey + '_';
+
+            request.onsuccess = (event) => {
+                const cursor = event.target.result;
+                if (cursor) {
+                    if (typeof cursor.key === 'string' && cursor.key.startsWith(prefix)) {
+                        const chestId = cursor.key.substring(prefix.length);
+                        chests.set(chestId, cursor.value);
+                    }
+                    cursor.continue();
+                } else {
+                    resolve(chests);
+                }
+            };
+            request.onerror = (event) => reject(event.target.error);
+        });
     }
 
     // ---- Internal Helpers ----

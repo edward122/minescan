@@ -460,11 +460,72 @@ export class Player {
             for (let y = minY; y <= maxY; y++) {
                 for (let z = minZ; z <= maxZ; z++) {
                     const voxel = this.world.getVoxel(x, y, z);
-                    if (voxel !== 0 && !isBlockNoCollision(voxel) && voxel !== Blocks.WATER) {
+
+                    if (voxel === Blocks.CACTUS) {
+                        this.takeDamage(1);
+                    }
+
+                    if (voxel !== 0 && voxel !== Blocks.WATER && !isBlockNoCollision(voxel)) {
                         return true;
                     }
-                    if (voxel === Blocks.CACTUS) {
-                        this.takeDamage(1); // Small damage per tick checked when touching
+
+                    // Custom AABB for doors to match visual mesh
+                    if (voxel === Blocks.OAK_DOOR || voxel === Blocks.OAK_DOOR_TOP ||
+                        voxel === Blocks.OAK_DOOR_BOTTOM_OPEN || voxel === Blocks.OAK_DOOR_TOP_OPEN) {
+
+                        let dMinX = x, dMaxX = x + 1;
+                        let dMinZ = z, dMaxZ = z + 1;
+
+                        if (voxel === Blocks.OAK_DOOR || voxel === Blocks.OAK_DOOR_TOP) {
+                            // Closed: clings to minX, spans Z
+                            dMaxX = x + 3 / 16;
+                        } else {
+                            // Open: clings to minZ, spans X
+                            dMaxZ = z + 3 / 16;
+                        }
+
+                        // Check intersection with player AABB
+                        const pMinX = this.position.x - this.radius;
+                        const pMaxX = this.position.x + this.radius;
+                        const pMinY = this.position.y - this.height;
+                        const pMaxY = this.position.y + 0.1;
+                        const pMinZ = this.position.z - this.radius;
+                        const pMaxZ = this.position.z + this.radius;
+
+                        if (pMaxX > dMinX && pMinX < dMaxX &&
+                            pMaxY > y && pMinY < y + 1 &&
+                            pMaxZ > dMinZ && pMinZ < dMaxZ) {
+                            return true;
+                        }
+                    }
+
+                    // Custom AABB for trapdoors to match visual mesh
+                    if (voxel === Blocks.TRAPDOOR || voxel === Blocks.TRAPDOOR_OPEN) {
+                        let tMinX = x, tMaxX = x + 1;
+                        let tMinY = y, tMaxY = y + 1;
+                        let tMinZ = z, tMaxZ = z + 1;
+
+                        if (voxel === Blocks.TRAPDOOR) {
+                            // Closed: top of the block
+                            tMinY = y + 13 / 16;
+                        } else {
+                            // Open: clings to minZ
+                            tMaxZ = z + 3 / 16;
+                        }
+
+                        // Check intersection with player AABB
+                        const pMinX = this.position.x - this.radius;
+                        const pMaxX = this.position.x + this.radius;
+                        const pMinY = this.position.y - this.height;
+                        const pMaxY = this.position.y + 0.1;
+                        const pMinZ = this.position.z - this.radius;
+                        const pMaxZ = this.position.z + this.radius;
+
+                        if (pMaxX > tMinX && pMinX < tMaxX &&
+                            pMaxY > tMinY && pMinY < tMaxY &&
+                            pMaxZ > tMinZ && pMinZ < tMaxZ) {
+                            return true;
+                        }
                     }
                 }
             }

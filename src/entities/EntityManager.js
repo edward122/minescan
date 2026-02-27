@@ -11,6 +11,7 @@ export class EntityManager {
         this.droppedItems = [];
         this.arrows = [];
         this.skyManager = null; // Set externally after construction
+        this._nextMobId = 1;
 
         // Settings
         this.maxEntities = 20;
@@ -22,6 +23,26 @@ export class EntityManager {
         window.addEventListener('item-dropped', (e) => {
             this.droppedItems.push(e.detail.item);
         });
+    }
+
+    /**
+     * Get compact mob states for network broadcast
+     */
+    getMobStates() {
+        const states = [];
+        for (const mob of this.entities) {
+            states.push({
+                id: mob.mobId,
+                t: mob.type,
+                x: Math.round(mob.mesh.position.x * 10) / 10,
+                y: Math.round(mob.mesh.position.y * 10) / 10,
+                z: Math.round(mob.mesh.position.z * 10) / 10,
+                ry: Math.round(mob.mesh.rotation.y * 100) / 100,
+                h: mob.health,
+                d: mob.isDead ? 1 : 0,
+            });
+        }
+        return states;
     }
 
     addDroppedItem(itemId, count, position, velocity = null) {
@@ -205,6 +226,7 @@ export class EntityManager {
             const position = new THREE.Vector3(spawnX + 0.5, spawnY, spawnZ + 0.5);
             try {
                 const mob = new Mob(type, position, this.scene, this.world);
+                mob.mobId = this._nextMobId++;
                 this.entities.push(mob);
             } catch (e) {
                 console.error("Error instantiating Mob:", e);

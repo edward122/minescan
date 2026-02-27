@@ -3,7 +3,11 @@
 
 <head>
   <meta charset="UTF-8" />
-  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/logo192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="/logo512.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Minescan</title>
   <link rel="stylesheet" href="./style.css" />
@@ -30,6 +34,12 @@
       </div>
     </div>
     <div id="hotbar" class="hotbar"></div>
+    <!-- Chat -->
+    <div id="chat-container">
+      <div id="chat-log"></div>
+      <input type="text" id="chat-input" class="hidden" placeholder="Press T to chat..." maxlength="200"
+        autocomplete="off">
+    </div>
   </div>
 
   <!-- Debug Overlay -->
@@ -104,6 +114,12 @@
           </div>
         </div>
 
+        <!-- Chest -->
+        <div id="chest-panel" class="chest-panel hidden">
+          <h3 class="panel-label">Chest</h3>
+          <div id="chest-grid" class="slot-grid inventory-3x9"></div>
+        </div>
+
       </div>
 
       <div class="main-inventory-section">
@@ -132,11 +148,14 @@
       </div>
       <button id="btn-settings" class="mc-button">Settings</button>
       <div id="multiplayer-section">
-        <div id="mp-controls">
-          <input type="text" id="mp-server" placeholder="ws://localhost:8080" value="ws://localhost:8080">
+        <h3 style="margin: 8px 0 4px; font-size: 1em; color: #ccc; text-shadow: 1px 1px 0 #000;">Join Multiplayer</h3>
+        <div class="mp-join-form">
           <input type="text" id="mp-name" placeholder="Your Name" maxlength="16">
-          <button id="btn-mp-connect" class="mc-button mc-button-small">Connect</button>
-          <button id="btn-mp-disconnect" class="mc-button mc-button-small mc-button-danger hidden">Disconnect</button>
+          <div class="mp-join-row">
+            <input type="text" id="mp-room-code" placeholder="Room Code" maxlength="6"
+              style="text-transform:uppercase; width:120px; text-align:center; letter-spacing:3px; font-size:1.1em;">
+            <button id="btn-mp-join" class="mc-button mc-button-small">Join</button>
+          </div>
         </div>
         <div id="mp-status" class="mp-status-text"></div>
       </div>
@@ -147,6 +166,22 @@
       <h2>Game Paused</h2>
       <button id="btn-resume" class="mc-button">Back to Game</button>
       <button id="btn-pause-settings" class="mc-button">Settings</button>
+
+      <!-- Multiplayer Host/Active Section -->
+      <div id="mp-pause-section" style="width:320px; margin:8px 0;">
+        <div id="mp-host-controls">
+          <input type="text" id="mp-host-name" placeholder="Your Name" maxlength="16"
+            style="width:100%; box-sizing:border-box; padding:8px 12px; background:rgba(30,30,30,0.8); border:2px solid #555; color:#fff; font-family:monospace; margin-bottom:6px;">
+          <button id="btn-mp-host" class="mc-button">Open to LAN</button>
+        </div>
+        <div id="mp-active" class="hidden">
+          <div id="mp-room-display" class="mp-room-display"></div>
+          <div id="mp-peer-list" class="mp-peer-list"></div>
+          <button id="btn-mp-disconnect" class="mc-button mc-button-small mc-button-danger">Stop Hosting</button>
+        </div>
+        <div id="mp-pause-status" class="mp-status-text"></div>
+      </div>
+
       <button id="btn-quit" class="mc-button mc-button-danger">Save & Quit to Title</button>
     </div>
 

@@ -14,12 +14,13 @@ import { InventoryUI } from './inventory/InventoryUI.js';
 import { SkyManager } from './world/SkyManager.js';
 import { LightingManager } from './world/LightingManager.js';
 import { EntityManager } from './entities/EntityManager.js';
+import { Mob } from './entities/Mob.js';
 import { AudioSystem } from './audio/AudioSystem.js';
 import { UIManager } from './ui/UIManager.js';
 import { DebugOverlay } from './ui/DebugOverlay.js';
 import { StorageManager } from './persistence/StorageManager.js';
 import { ParticleSystem } from './fx/ParticleSystem.js';
-import { NetworkManager } from './network/NetworkManager.js';
+import { PeerManager } from './network/PeerManager.js';
 
 const storage = new StorageManager();
 await storage.init();
@@ -106,11 +107,53 @@ entityManager.skyManager = skyManager;
 entityManager._onItemPickedUp = _markInventoryDirty;
 player.entityManager = entityManager;
 
+// HOST: Broadcast mob death item drops to peers
+window.addEventListener('item-dropped', (e) => {
+  if (peerManager.isConnected && peerManager.isHost) {
+    const item = e.detail.item;
+    peerManager.sendItemDrop(item.itemId, item.count, item.mesh.position.x, item.mesh.position.y, item.mesh.position.z);
+  }
+});
+
 const audioSystem = new AudioSystem();
 player.audioSystem = audioSystem;
 
 const uiManager = new UIManager(inputManager);
 inventoryUI.uiManager = uiManager;
+
+// --- Item Drop Callback ---
+// Called by InventoryUI when the player drops items (Q key, Ctrl+Q, drag-out-of-inventory)
+inventoryUI.onDropItem = (itemId, count) => {
+  // Calculate drop position: at eye height, slightly forward
+  const dropDir = new THREE.Vector3(0, 0, -1);
+  dropDir.applyQuaternion(camera.quaternion);
+  dropDir.normalize();
+
+  const dropPos = player.position.clone();
+  dropPos.y += 1.6; // Eye height
+  dropPos.addScaledVector(dropDir, 0.5); // Spawn just in front of the face
+
+  // Throw velocity: exact camera direction * speed
+  const throwVel = new THREE.Vector3(
+    dropDir.x * 6,
+    dropDir.y * 6,
+    dropDir.z * 6
+  );
+
+  entityManager.addDroppedItem(itemId, count, dropPos, throwVel);
+
+  // Multiplayer sync
+  if (peerManager.isConnected) {
+    if (peerManager.isHost) {
+      peerManager.sendItemDrop(itemId, count, dropPos.x, dropPos.y, dropPos.z);
+    } else {
+      peerManager.sendPlayerDrop(itemId, count, dropPos.x, dropPos.y, dropPos.z);
+    }
+  }
+
+  _markInventoryDirty();
+};
+
 const debugOverlay = new DebugOverlay();
 const particleSystem = new ParticleSystem(scene);
 
@@ -224,6 +267,62 @@ async function startWorld(selectedWorldId, seed) {
   }
   inventoryUI.render();
 
+  // Load block change log for multiplayer sync
+  const savedBlockLog = await storage.loadPlayerState(worldKey + '_blocklog');
+  if (savedBlockLog && Array.isArray(savedBlockLog)) {
+    blockChangeMap.clear();
+    for (const entry of savedBlockLog) {
+      blockChangeMap.set(`${entry.x},${entry.y},${entry.z}`, entry.blockId);
+    }
+  } else {
+    blockChangeMap.clear();
+  }
+
+  // Load chests
+  window.chestInventories = await storage.loadAllChests(worldKey);
+
+  // Define Chest UI callbacks
+  window.onChestClosed = (chestPos, chestPos2 = null) => {
+    const chestId = `${chestPos.x},${chestPos.y},${chestPos.z}`;
+    const inv = window.chestInventories.get(chestId);
+    storage.saveChest(worldKey, chestId, inv);
+
+    // Close animation sync
+    const currentId = world.getVoxel(chestPos.x, chestPos.y, chestPos.z);
+
+    // Save second
+    if (chestPos2) {
+      const chestId2 = `${chestPos2.x},${chestPos2.y},${chestPos2.z}`;
+      const inv2 = window.chestInventories.get(chestId2);
+      if (inv2) storage.saveChest(worldKey, chestId2, inv2);
+    }
+
+    const positionsToAnimate = [];
+    if (currentId === Blocks.CHEST_OPEN) positionsToAnimate.push(chestPos);
+    if (chestPos2 && world.getVoxel(chestPos2.x, chestPos2.y, chestPos2.z) === Blocks.CHEST_OPEN) {
+      positionsToAnimate.push(chestPos2);
+    }
+
+    if (positionsToAnimate.length > 0) {
+      playChestAnimation(positionsToAnimate, false, () => {
+        positionsToAnimate.forEach(pos => {
+          world.setVoxel(pos.x, pos.y, pos.z, Blocks.CHEST, true, true);
+          updateVoxelGeometry(pos.x, pos.y, pos.z);
+          addBlockChange(pos.x, pos.y, pos.z, Blocks.CHEST);
+          if (peerManager.isConnected) peerManager.sendBlockChange(pos.x, pos.y, pos.z, Blocks.CHEST);
+        });
+      });
+    }
+  };
+
+  window.onChestSlotUpdated = (chestPos, index, item) => {
+    const chestId = `${chestPos.x},${chestPos.y},${chestPos.z}`;
+    storage.saveChest(worldKey, chestId, window.chestInventories.get(chestId));
+    if (peerManager.isConnected) {
+      peerManager.sendEvent('CHEST_UPDATE_SLOT', { x: chestPos.x, y: chestPos.y, z: chestPos.z, index, item });
+    }
+  };
+
   // Pre-generate terrain around spawn/player
   const spawnCoords = world.computeChunkCoordinates(player.position.x, player.position.y, player.position.z);
   const initRenderDist = 3;
@@ -301,6 +400,8 @@ uiManager.onWorldDeleted = async (selectedWorldId) => {
 
 uiManager.onQuitToTitle = async () => {
   await saveWorldState();
+  // Disconnect multiplayer — this kicks all connected peers
+  if (peerManager.isConnected) peerManager.disconnect();
   worldKey = null;
   await refreshWorldList();
 };
@@ -322,6 +423,9 @@ window.addEventListener('player-death', () => {
   }
   inventoryUI.render();
   uiManager.showDeathScreen();
+
+  // Broadcast death to other players
+  if (peerManager.isConnected) peerManager.sendPlayerDeath();
 });
 
 uiManager.onRespawn = () => {
@@ -330,9 +434,14 @@ uiManager.onRespawn = () => {
   inventory.slots[1] = { id: Blocks.STONE, count: 64 };
   inventory.slots[2] = { id: Blocks.WOOD, count: 64 };
   inventoryUI.render();
+
+  // Broadcast respawn to other players
+  if (peerManager.isConnected) peerManager.sendPlayerRespawn(player.position);
 };
 
 inputManager.onPointerLockLost = () => {
+  // Don't show pause menu if chat is open (chat will handle it)
+  if (typeof chatOpen !== 'undefined' && chatOpen) return;
   uiManager.handlePointerLockLost();
   saveWorldState();
 };
@@ -448,6 +557,41 @@ function getMineSpeed(blockId) {
   return speed / hardness;
 }
 
+// Block change log for multiplayer — records all block modifications
+// Uses a Map keyed by "x,y,z" for automatic deduplication (only latest change kept)
+// This stays bounded: N unique positions modified, not N total modifications
+let blockChangeMap = new Map(); // key: "x,y,z", value: blockId
+
+function addBlockChange(x, y, z, blockId) {
+  blockChangeMap.set(`${x},${y},${z}`, blockId);
+}
+
+function getBlockChangeLog() {
+  // Convert map to array for replay/save
+  const log = [];
+  for (const [key, blockId] of blockChangeMap) {
+    const [x, y, z] = key.split(',').map(Number);
+    log.push({ x, y, z, blockId });
+  }
+  return log;
+}
+
+function getAdjacentChests(x, y, z) {
+  const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+  const chests = [];
+  for (const [dx, dy, dz] of dirs) {
+    const id = world.getVoxel(x + dx, y + dy, z + dz);
+    if (id === Blocks.CHEST || id === Blocks.CHEST_OPEN) {
+      chests.push({ x: x + dx, y: y + dy, z: z + dz });
+    }
+  }
+  return chests;
+}
+
+// Pending block changes from host replay — deferred until terrain is generated
+// Map<colId, Array<{x, y, z, blockId}>>
+let pendingBlockChanges = new Map();
+
 function breakBlock(px, py, pz) {
   const blockId = world.getVoxel(px, py, pz);
   if (!blockId) return;
@@ -457,11 +601,61 @@ function breakBlock(px, py, pz) {
     particleSystem.removeTorchEmitter(px, py, pz);
   }
 
+  let actualDropId = blockId;
+  let otherY = py;
+
+  if (blockId === Blocks.OAK_DOOR_TOP || blockId === Blocks.OAK_DOOR_TOP_OPEN) {
+    actualDropId = Blocks.OAK_DOOR;
+    otherY = py - 1;
+  } else if (blockId === Blocks.OAK_DOOR || blockId === Blocks.OAK_DOOR_BOTTOM_OPEN) {
+    actualDropId = Blocks.OAK_DOOR;
+    otherY = py + 1;
+  } else if (blockId === Blocks.TRAPDOOR_OPEN) {
+    actualDropId = Blocks.TRAPDOOR;
+  }
+
+  if (otherY !== py) {
+    const otherId = world.getVoxel(px, otherY, pz);
+    if (otherId === Blocks.OAK_DOOR || otherId === Blocks.OAK_DOOR_BOTTOM_OPEN || otherId === Blocks.OAK_DOOR_TOP || otherId === Blocks.OAK_DOOR_TOP_OPEN) {
+      world.setVoxel(px, otherY, pz, 0, true, true);
+      updateVoxelGeometry(px, otherY, pz);
+      addBlockChange(px, otherY, pz, 0);
+      if (peerManager.isConnected) peerManager.sendBlockChange(px, otherY, pz, 0);
+    }
+  }
+
   world.setVoxel(px, py, pz, 0, true, true);
   audioSystem.playBlockBreak();
   particleSystem.emitBlockBreak(px, py, pz, blockId);
   updateVoxelGeometry(px, py, pz);
-  if (networkManager.isConnected) networkManager.sendBlockChange(px, py, pz, 0);
+  // Always log block changes for multiplayer sync (even before hosting)
+  addBlockChange(px, py, pz, 0);
+  if (peerManager.isConnected) {
+    peerManager.sendBlockChange(px, py, pz, 0);
+    peerManager.sendSoundEffect('break', px, py, pz);
+  }
+
+  if (blockId === Blocks.CHEST || blockId === Blocks.CHEST_OPEN) {
+    if (blockId === Blocks.CHEST_OPEN) inventoryUI.closeUI();
+    const chestId = `${px},${py},${pz}`;
+    if (window.chestInventories && window.chestInventories.has(chestId)) {
+      const inv = window.chestInventories.get(chestId);
+      for (const item of inv) {
+        if (item && item.count > 0) {
+          const blockCenter = new THREE.Vector3(px + 0.5, py + 0.5, pz + 0.5);
+          const vel = new THREE.Vector3((Math.random() - 0.5) * 5, 3, (Math.random() - 0.5) * 5);
+          entityManager.addDroppedItem(item.id, item.count, blockCenter, vel);
+          if (peerManager.isConnected && peerManager.isHost) {
+            peerManager.sendItemDrop(item.id, item.count, blockCenter.x, blockCenter.y, blockCenter.z);
+          }
+        }
+      }
+      window.chestInventories.delete(chestId);
+      if (typeof worldKey !== 'undefined') {
+        storage.saveChest(worldKey, chestId, null);
+      }
+    }
+  }
 
   if (blockId !== Blocks.BEDROCK && blockId !== Blocks.LAVA) {
     // Eject item towards player to prevent clipping into ceiling blocks
@@ -472,8 +666,19 @@ function breakBlock(px, py, pz) {
     const ejectDir = new THREE.Vector3().subVectors(playerHead, blockCenter).normalize();
     const ejectVel = new THREE.Vector3(ejectDir.x * 4, Math.max(2, ejectDir.y * 5), ejectDir.z * 4);
 
-    entityManager.addDroppedItem(blockId, 1, blockCenter, ejectVel);
+    entityManager.addDroppedItem(actualDropId, 1, blockCenter, ejectVel);
+    // HOST: broadcast item drop to peers
+    if (peerManager.isConnected && peerManager.isHost) {
+      peerManager.sendItemDrop(actualDropId, 1, blockCenter.x, blockCenter.y, blockCenter.z);
+    }
   }
+
+  // Damage tool durability
+  const toolBroke = inventory.damageActiveTool();
+  if (toolBroke) {
+    audioSystem.playBlockBreak(); // Tool break sound
+  }
+  inventoryUI.updateHotbar();
 }
 
 function stopMining() {
@@ -535,6 +740,71 @@ window.addEventListener('mousedown', (e) => {
       }
     }
 
+    // --- PvP: Check remote player meshes ---
+    if (peerManager.isConnected && playerAttackCooldown <= 0) {
+      const playerMeshArray = Array.from(remotePlayerMeshes.values()).filter(m => m.visible);
+      const pvpIntersects = entityRaycaster.intersectObjects(playerMeshArray, true);
+      for (const hit of pvpIntersects) {
+        // Find which remote player was hit
+        let hitPlayerId = null;
+        for (const [id, mesh] of remotePlayerMeshes) {
+          if (mesh === hit.object || mesh.children.includes(hit.object)
+            || mesh.children.some(c => c === hit.object || c.children?.includes(hit.object))) {
+            hitPlayerId = id;
+            break;
+          }
+        }
+        if (hitPlayerId) {
+          const hitMesh = remotePlayerMeshes.get(hitPlayerId);
+          const dist = hitMesh.position.distanceTo(player.position);
+          if (dist < 5) {
+            playerAttackCooldown = 0.4;
+
+            const activeItem = inventory.getActiveItem();
+            const toolData = activeItem ? getToolData(activeItem.id) : null;
+            let damage = toolData ? toolData.damage : 1;
+            const isCritical = player.velocity.y < -1 && !player.isGrounded;
+            if (isCritical) damage = Math.ceil(damage * 1.5);
+
+            audioSystem.playHit();
+
+            // Calculate knockback direction
+            const kbDir = new THREE.Vector3().subVectors(hitMesh.position, player.position);
+            kbDir.y = 0;
+            if (kbDir.lengthSq() < 0.01) { kbDir.set(Math.random() - 0.5, 0, Math.random() - 0.5); }
+            kbDir.normalize();
+            const kbForce = isCritical ? 14 : 10;
+
+            // Send hit to the target player
+            peerManager.sendPlayerHit(hitPlayerId, damage, {
+              x: kbDir.x * kbForce,
+              y: isCritical ? 10 : 8,
+              z: kbDir.z * kbForce,
+            }, isCritical);
+
+            // Visual feedback: flash red using hitFlashTimer (auto-restored in animate loop)
+            hitMesh.traverse(child => {
+              if (child.isMesh && child.material) {
+                child.material.color.setHex(0xff3333);
+              }
+            });
+            hitMesh.userData.hitFlashTimer = 0.2; // 200ms flash
+            hitMesh.userData.punchTimer = 0; // reset their punch if any
+
+            // Durability damage on weapon
+            if (activeItem && toolData) {
+              activeItem.durability = (activeItem.durability ?? toolData.durability) - 1;
+              if (activeItem.durability <= 0) {
+                inventory.slots[inventory.activeSlot] = null;
+              }
+              inventoryUI.render();
+            }
+            return;
+          }
+        }
+      }
+    }
+
     // Start mining the targeted block
     if (activeIntersection) {
       const px = activeIntersection.position.x;
@@ -566,6 +836,65 @@ window.addEventListener('mousedown', (e) => {
       } else if (targetBlockId === Blocks.FURNACE) {
         inventoryUI.openFurnace();
         return;
+      } else if (targetBlockId === Blocks.CHEST || targetBlockId === Blocks.CHEST_OPEN) {
+        const tx = activeIntersection.position.x;
+        const ty = activeIntersection.position.y;
+        const tz = activeIntersection.position.z;
+        const adj = getAdjacentChests(tx, ty, tz);
+        const pos1 = { x: tx, y: ty, z: tz };
+        const pos2 = adj.length > 0 ? adj[0] : null;
+
+        const positionsToAnimate = [pos1];
+        if (pos2 && world.getVoxel(pos2.x, pos2.y, pos2.z) === targetBlockId) {
+          positionsToAnimate.push(pos2);
+        }
+
+        if (targetBlockId === Blocks.CHEST) {
+          playChestAnimation(positionsToAnimate, true, () => {
+            positionsToAnimate.forEach(pos => {
+              world.setVoxel(pos.x, pos.y, pos.z, Blocks.CHEST_OPEN, true, true);
+              addBlockChange(pos.x, pos.y, pos.z, Blocks.CHEST_OPEN);
+              if (peerManager.isConnected) peerManager.sendBlockChange(pos.x, pos.y, pos.z, Blocks.CHEST_OPEN);
+              updateVoxelGeometry(pos.x, pos.y, pos.z);
+            });
+          });
+        }
+
+        inventoryUI.openChest(pos1, pos2);
+        return;
+      } else if (targetBlockId === Blocks.OAK_DOOR || targetBlockId === Blocks.OAK_DOOR_BOTTOM_OPEN ||
+        targetBlockId === Blocks.OAK_DOOR_TOP || targetBlockId === Blocks.OAK_DOOR_TOP_OPEN ||
+        targetBlockId === Blocks.TRAPDOOR || targetBlockId === Blocks.TRAPDOOR_OPEN) {
+
+        const tx = activeIntersection.position.x;
+        const ty = activeIntersection.position.y;
+        const tz = activeIntersection.position.z;
+
+        let newTargetId = targetBlockId;
+        let otherY = ty;
+        let newOtherId = targetBlockId;
+
+        if (targetBlockId === Blocks.OAK_DOOR) { newTargetId = Blocks.OAK_DOOR_BOTTOM_OPEN; otherY = ty + 1; newOtherId = Blocks.OAK_DOOR_TOP_OPEN; }
+        else if (targetBlockId === Blocks.OAK_DOOR_BOTTOM_OPEN) { newTargetId = Blocks.OAK_DOOR; otherY = ty + 1; newOtherId = Blocks.OAK_DOOR_TOP; }
+        else if (targetBlockId === Blocks.OAK_DOOR_TOP) { newTargetId = Blocks.OAK_DOOR_TOP_OPEN; otherY = ty - 1; newOtherId = Blocks.OAK_DOOR_BOTTOM_OPEN; }
+        else if (targetBlockId === Blocks.OAK_DOOR_TOP_OPEN) { newTargetId = Blocks.OAK_DOOR_TOP; otherY = ty - 1; newOtherId = Blocks.OAK_DOOR; }
+        else if (targetBlockId === Blocks.TRAPDOOR) { newTargetId = Blocks.TRAPDOOR_OPEN; }
+        else if (targetBlockId === Blocks.TRAPDOOR_OPEN) { newTargetId = Blocks.TRAPDOOR; }
+
+        world.setVoxel(tx, ty, tz, newTargetId, true, true);
+        updateVoxelGeometry(tx, ty, tz);
+        addBlockChange(tx, ty, tz, newTargetId);
+        if (peerManager.isConnected) peerManager.sendBlockChange(tx, ty, tz, newTargetId);
+
+        if (otherY !== ty) {
+          world.setVoxel(tx, otherY, tz, newOtherId, true, true);
+          updateVoxelGeometry(tx, otherY, tz);
+          addBlockChange(tx, otherY, tz, newOtherId);
+          if (peerManager.isConnected) peerManager.sendBlockChange(tx, otherY, tz, newOtherId);
+        }
+
+        audioSystem.playBlockPlace(); // Door/trapdoor toggling sound
+        return;
       }
 
       const placePos = activeIntersection.position.clone().add(activeIntersection.normal);
@@ -586,6 +915,27 @@ window.addEventListener('mousedown', (e) => {
             }
           } else {
             // Normal block placement
+            if (activeItem.id === Blocks.OAK_DOOR) {
+              const aboveBlock = world.getVoxel(placePos.x, placePos.y + 1, placePos.z);
+              if (aboveBlock !== Blocks.AIR) {
+                // Cannot place door if blocked above
+                return;
+              }
+              world.setVoxel(placePos.x, placePos.y + 1, placePos.z, Blocks.OAK_DOOR_TOP, true, true);
+              updateVoxelGeometry(placePos.x, placePos.y + 1, placePos.z);
+              addBlockChange(placePos.x, placePos.y + 1, placePos.z, Blocks.OAK_DOOR_TOP);
+              if (peerManager.isConnected) peerManager.sendBlockChange(placePos.x, placePos.y + 1, placePos.z, Blocks.OAK_DOOR_TOP);
+            }
+
+            if (activeItem.id === Blocks.CHEST || activeItem.id === Blocks.CHEST_OPEN) {
+              const adj = getAdjacentChests(placePos.x, placePos.y, placePos.z);
+              if (adj.length > 1) return; // Prevent 3-way junctions
+              if (adj.length === 1) {
+                const adjOfAdj = getAdjacentChests(adj[0].x, adj[0].y, adj[0].z);
+                if (adjOfAdj.length > 0) return; // Prevent extending an existing double chest
+              }
+            }
+
             world.setVoxel(placePos.x, placePos.y, placePos.z, activeItem.id, true, true);
 
             if (activeItem.id === Blocks.TORCH) {
@@ -597,7 +947,12 @@ window.addEventListener('mousedown', (e) => {
             inventory.consumeActiveItem();
             inventoryUI.render();
             updateVoxelGeometry(placePos.x, placePos.y, placePos.z);
-            if (networkManager.isConnected) networkManager.sendBlockChange(placePos.x, placePos.y, placePos.z, activeItem.id);
+            // Always log block changes for multiplayer sync
+            addBlockChange(placePos.x, placePos.y, placePos.z, activeItem.id);
+            if (peerManager.isConnected) {
+              peerManager.sendBlockChange(placePos.x, placePos.y, placePos.z, activeItem.id);
+              peerManager.sendSoundEffect('place', placePos.x, placePos.y, placePos.z);
+            }
           }
         }
       }
@@ -672,34 +1027,88 @@ window.addEventListener('creeper-explosion', (e) => {
 // Attack cooldown for player melee
 let playerAttackCooldown = 0;
 
-// ---- Multiplayer ----
-const networkManager = new NetworkManager();
+// ---- Multiplayer (WebRTC P2P) ----
+const peerManager = new PeerManager();
 const remotePlayerMeshes = new Map(); // id -> THREE.Group
+const _mpTempVec3 = new THREE.Vector3(); // reusable vector for lerp
 
-const mpServerInput = document.getElementById('mp-server');
+// Main menu: Join controls
 const mpNameInput = document.getElementById('mp-name');
-const btnMpConnect = document.getElementById('btn-mp-connect');
-const btnMpDisconnect = document.getElementById('btn-mp-disconnect');
+const btnMpJoin = document.getElementById('btn-mp-join');
+const mpRoomCodeInput = document.getElementById('mp-room-code');
 const mpStatus = document.getElementById('mp-status');
 
-btnMpConnect.addEventListener('click', () => {
-  const url = mpServerInput.value.trim() || 'ws://localhost:8080';
+// Pause menu: Host controls
+const mpHostNameInput = document.getElementById('mp-host-name');
+const btnMpHost = document.getElementById('btn-mp-host');
+const btnMpDisconnect = document.getElementById('btn-mp-disconnect');
+const mpHostControls = document.getElementById('mp-host-controls');
+const mpActive = document.getElementById('mp-active');
+const mpRoomDisplay = document.getElementById('mp-room-display');
+const mpPeerList = document.getElementById('mp-peer-list');
+const mpPauseStatus = document.getElementById('mp-pause-status');
+
+// Host button (in pause menu): start hosting the current world
+btnMpHost.addEventListener('click', () => {
+  const name = mpHostNameInput.value.trim() || 'Player';
+  mpPauseStatus.textContent = 'Creating room...';
+  mpPauseStatus.style.color = '#ff8';
+  peerManager.setWorldSeed(currentWorldSeed);
+  peerManager.setWorldTime(skyManager.time);
+  peerManager.hostWorld(name);
+});
+
+// Join button (in main menu): connect to a host room
+btnMpJoin.addEventListener('click', () => {
+  const code = mpRoomCodeInput.value.trim();
+  if (!code || code.length < 4) {
+    mpStatus.textContent = 'Enter a valid room code';
+    mpStatus.style.color = '#f88';
+    return;
+  }
   const name = mpNameInput.value.trim() || 'Player';
   mpStatus.textContent = 'Connecting...';
   mpStatus.style.color = '#ff8';
-  networkManager.connect(url, name);
+  peerManager.joinWorld(code, name);
 });
 
+// Disconnect / Stop hosting
 btnMpDisconnect.addEventListener('click', () => {
-  networkManager.disconnect();
+  peerManager.disconnect();
 });
+
+function showMpActive(roomCode) {
+  mpHostControls.classList.add('hidden');
+  mpActive.classList.remove('hidden');
+  mpRoomDisplay.innerHTML = `<div class="room-label">Room Code (share this!)</div><div class="room-code">${roomCode}</div>`;
+}
+
+function hideMpActive() {
+  mpHostControls.classList.remove('hidden');
+  mpActive.classList.add('hidden');
+  mpRoomDisplay.innerHTML = '';
+  mpPeerList.innerHTML = '';
+}
 
 function createRemotePlayerMesh(name) {
   const group = new THREE.Group();
 
-  // Body
+  // Generate unique colors based on player name hash
+  function hashName(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+      h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+    }
+    return h >>> 0;
+  }
+  const nameHash = hashName(name || 'Player');
+  const hue = (nameHash % 360) / 360;
+  const bodyColor = new THREE.Color().setHSL(hue, 0.6, 0.4);
+  const legColor = new THREE.Color().setHSL(hue, 0.4, 0.25);
+
+  // Body (cloned materials so color changes don't bleed)
   const bodyGeo = new THREE.BoxGeometry(0.5, 0.75, 0.25);
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x3366cc });
+  const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor });
   const body = new THREE.Mesh(bodyGeo, bodyMat);
   body.position.y = 1.0;
   group.add(body);
@@ -711,19 +1120,21 @@ function createRemotePlayerMesh(name) {
   head.position.y = 1.6;
   group.add(head);
 
-  // Arms
+  // Arms (each gets its own cloned material)
   const armGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2);
-  const armMat = new THREE.MeshLambertMaterial({ color: 0x3366cc });
-  const la = new THREE.Mesh(armGeo, armMat); la.position.set(-0.4, 1.0, 0);
-  const ra = new THREE.Mesh(armGeo, armMat); ra.position.set(0.4, 1.0, 0);
-  group.add(la, ra);
+  const leftArm = new THREE.Mesh(armGeo, new THREE.MeshLambertMaterial({ color: bodyColor }));
+  leftArm.position.set(-0.4, 1.0, 0);
+  const rightArm = new THREE.Mesh(armGeo, new THREE.MeshLambertMaterial({ color: bodyColor }));
+  rightArm.position.set(0.4, 1.0, 0);
+  group.add(leftArm, rightArm);
 
-  // Legs
+  // Legs (each gets its own cloned material)
   const legGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2);
-  const legMat = new THREE.MeshLambertMaterial({ color: 0x333366 });
-  const ll = new THREE.Mesh(legGeo, legMat); ll.position.set(-0.1, 0.35, 0);
-  const rl = new THREE.Mesh(legGeo, legMat); rl.position.set(0.1, 0.35, 0);
-  group.add(ll, rl);
+  const leftLeg = new THREE.Mesh(legGeo, new THREE.MeshLambertMaterial({ color: legColor }));
+  leftLeg.position.set(-0.1, 0.35, 0);
+  const rightLeg = new THREE.Mesh(legGeo, new THREE.MeshLambertMaterial({ color: legColor }));
+  rightLeg.position.set(0.1, 0.35, 0);
+  group.add(leftLeg, rightLeg);
 
   // Nametag (sprite)
   const canvas = document.createElement('canvas');
@@ -744,71 +1155,709 @@ function createRemotePlayerMesh(name) {
   tagSprite.position.y = 2.2;
   group.add(tagSprite);
 
+  // Store original colors for flash reset
+  const origColors = new Map();
+  group.traverse(child => {
+    if (child.isMesh && child.material) {
+      origColors.set(child, child.material.color.getHex());
+    }
+  });
+
+  // Store part references for animation
+  group.userData = {
+    leftArm, rightArm, leftLeg, rightLeg, head,
+    origColors,
+    playerName: name || 'Player',
+    targetPos: null,
+    targetRotY: 0,
+    targetPitchX: 0,
+    walkTime: 0,
+    isDead: false,
+    hitFlashTimer: 0,
+    punchTimer: 0,
+  };
+
   return group;
 }
 
-networkManager.onConnected = (id) => {
-  mpStatus.textContent = `Connected as ${id}`;
-  mpStatus.style.color = '#8f8';
-  btnMpConnect.classList.add('hidden');
-  btnMpDisconnect.classList.remove('hidden');
+// ---- PeerManager callbacks ----
+
+peerManager.onRoomCreated = (roomCode) => {
+  showMpActive(roomCode);
+  mpPauseStatus.textContent = `Hosting — code: ${roomCode}`;
+  mpPauseStatus.style.color = '#8f8';
 };
 
-networkManager.onDisconnected = () => {
+peerManager.onConnected = (id) => {
+  if (!peerManager.isHost) {
+    // Joiner connected via main menu
+    mpStatus.textContent = `Connected (${id})`;
+    mpStatus.style.color = '#8f8';
+    // Hide host controls in pause menu for joiners (not their world)
+    mpHostControls.classList.add('hidden');
+  } else {
+    mpPauseStatus.textContent = `Hosting — connected`;
+    mpPauseStatus.style.color = '#8f8';
+  }
+};
+
+peerManager.onDisconnected = () => {
+  mpPauseStatus.textContent = '';
   mpStatus.textContent = 'Disconnected';
   mpStatus.style.color = '#f88';
-  btnMpConnect.classList.remove('hidden');
-  btnMpDisconnect.classList.add('hidden');
+  hideMpActive();
+  // Show host controls again (in case joiner was hiding them)
+  mpHostControls.classList.remove('hidden');
   // Clean up remote player meshes
   for (const [id, mesh] of remotePlayerMeshes) {
     scene.remove(mesh);
   }
   remotePlayerMeshes.clear();
+
+  // Clean up remote mobs
+  for (const [id, entry] of remoteMobMeshes) {
+    scene.remove(entry.mesh);
+  }
+  remoteMobMeshes.clear();
+
+  // If we were a joiner, kick back to title
+  if (!peerManager.isHost && worldKey) {
+    addChatMessage('', 'Host disconnected — returning to menu', true);
+    setTimeout(() => {
+      uiManager.showMainMenu();
+    }, 1500);
+  }
 };
 
-networkManager.onPlayerJoin = (id, data) => {
+peerManager.onError = (message) => {
+  mpPauseStatus.textContent = message;
+  mpPauseStatus.style.color = '#f88';
+  mpStatus.textContent = message;
+  mpStatus.style.color = '#f88';
+};
+
+peerManager.onPlayerJoin = (id, data) => {
   const mesh = createRemotePlayerMesh(data.name);
-  mesh.position.set(data.x || 32, data.y || 100, data.z || 32);
+  // Offset Y down by 1.6 because player.position is at eye height
+  mesh.position.set(data.x || 32, (data.y || 100) - 1.6, data.z || 32);
   scene.add(mesh);
   remotePlayerMeshes.set(id, mesh);
+  addChatMessage('', `${data.name || id} joined the game`, true);
+
+  // HOST: Replay block change log to the new joiner
+  // Each change is a tiny message (x, y, z, blockId) — no size limit issues
+  if (peerManager.isHost && blockChangeMap.size > 0) {
+    // Find the peer's connection to send directly
+    let targetConn = null;
+    for (const [, info] of peerManager.connections) {
+      if (info.id === id && info.conn?.open) {
+        targetConn = info.conn;
+        break;
+      }
+    }
+    if (targetConn) {
+      // Convert to array for batched sending
+      const changeLog = getBlockChangeLog();
+      const BATCH_SIZE = 50;
+      let i = 0;
+      const sendBatch = () => {
+        const end = Math.min(i + BATCH_SIZE, changeLog.length);
+        for (; i < end; i++) {
+          const change = changeLog[i];
+          targetConn.send({
+            type: 'block',
+            x: change.x,
+            y: change.y,
+            z: change.z,
+            blockId: change.blockId,
+          });
+        }
+        if (i < changeLog.length) {
+          setTimeout(sendBatch, 50); // Small delay between batches
+        } else {
+          console.log(`[Host] Replayed ${changeLog.length} block changes to joiner ${id}`);
+        }
+      };
+      // Delay initial send to let peer generate terrain first
+      setTimeout(sendBatch, 2000);
+    }
+  }
 };
 
-networkManager.onPlayerLeave = (id) => {
+peerManager.onPlayerLeave = (id) => {
+  const playerName = peerManager.remotePlayers.get(id)?.name || id;
   const mesh = remotePlayerMeshes.get(id);
   if (mesh) {
     scene.remove(mesh);
     remotePlayerMeshes.delete(id);
   }
+  addChatMessage('', `${playerName} left the game`, true);
 };
 
-networkManager.onPlayerMove = (id, data) => {
+peerManager.onPlayerMove = (id, data) => {
   const mesh = remotePlayerMeshes.get(id);
   if (mesh) {
-    // Smooth interpolation
-    mesh.position.lerp(new THREE.Vector3(data.x, data.y, data.z), 0.3);
-    mesh.rotation.y = data.ry || 0;
+    // Store target — actual interpolation happens per-frame in animate()
+    const ud = mesh.userData;
+    // Offset Y down by 1.6 because player.position is at eye height
+    ud.targetPos = { x: data.x, y: data.y - 1.6, z: data.z };
+    ud.targetRotY = data.ry || 0;
+    ud.targetPitchX = data.rx || 0;
+    // Arm swing flags from move message
+    if (data.p) ud.punchTimer = 0.3; // punching
+    if (data.m) ud.punchTimer = Math.max(ud.punchTimer, 0.15); // mining (shorter swing)
   }
 };
 
-networkManager.onBlockChange = (x, y, z, blockId) => {
-  world.setVoxel(x, y, z, blockId, true, true);
-  updateVoxelGeometry(x, y, z);
+peerManager.onBlockChange = (x, y, z, blockId) => {
+  // Record block change on host for future joiners
+  if (peerManager.isHost) {
+    addBlockChange(x, y, z, blockId);
+  }
+
+  // Check if the chunk's column has been generated yet
+  const cs = world.chunkSize;
+  const colId = `${Math.floor(x / cs)},${Math.floor(z / cs)}`;
+  if (!generatedColumns.has(colId)) {
+    // Terrain not generated yet — defer this change
+    if (!pendingBlockChanges.has(colId)) {
+      pendingBlockChanges.set(colId, []);
+    }
+    pendingBlockChanges.get(colId).push({ x, y, z, blockId });
+    return;
+  }
+  if (animatingChests.has(`${x},${y},${z}`)) {
+    return; // Handled by group animation logic triggered earlier
+  }
+
+  // Check if we're removing a torch (old block was a torch)
+  const oldBlockId = world.getVoxel(x, y, z);
+  if (oldBlockId === Blocks.TORCH && blockId !== Blocks.TORCH) {
+    lightingManager.removeTorch(x, y, z);
+    particleSystem.removeTorchEmitter(x, y, z);
+  }
+
+  if (blockId === Blocks.CHEST_OPEN && oldBlockId === Blocks.CHEST) {
+    const adj = getAdjacentChests(x, y, z);
+    const pos1 = { x, y, z };
+    const positionsToAnimate = [pos1];
+    if (adj.length > 0) {
+      const pos2 = adj[0];
+      if (world.getVoxel(pos2.x, pos2.y, pos2.z) === Blocks.CHEST) positionsToAnimate.push(pos2);
+    }
+    playChestAnimation(positionsToAnimate, true, () => {
+      positionsToAnimate.forEach(pos => {
+        world.setVoxel(pos.x, pos.y, pos.z, blockId, true, true);
+        updateVoxelGeometry(pos.x, pos.y, pos.z);
+      });
+    });
+  } else if (blockId === Blocks.CHEST && oldBlockId === Blocks.CHEST_OPEN) {
+    const adj = getAdjacentChests(x, y, z);
+    const pos1 = { x, y, z };
+    const positionsToAnimate = [pos1];
+    if (adj.length > 0) {
+      const pos2 = adj[0];
+      if (world.getVoxel(pos2.x, pos2.y, pos2.z) === Blocks.CHEST_OPEN) positionsToAnimate.push(pos2);
+    }
+    playChestAnimation(positionsToAnimate, false, () => {
+      positionsToAnimate.forEach(pos => {
+        world.setVoxel(pos.x, pos.y, pos.z, blockId, true, true);
+        updateVoxelGeometry(pos.x, pos.y, pos.z);
+      });
+    });
+  } else {
+    world.setVoxel(x, y, z, blockId, true, true);
+    updateVoxelGeometry(x, y, z);
+  }
+
+  // If placing a torch, add light and particles
+  if (blockId === Blocks.TORCH) {
+    lightingManager.addTorch(x, y, z);
+    particleSystem.addTorchEmitter(x, y, z);
+  }
+};
+
+peerManager.onPeerListChanged = (list) => {
+  mpPeerList.innerHTML = list.map(p => {
+    const kickBtn = peerManager.isHost
+      ? `<button class="mc-button-kick" onclick="window._kickPlayer('${p.id}')" title="Kick">✕</button>`
+      : '';
+    return `<div class="peer-entry"><span>${p.name}</span>${kickBtn}</div>`;
+  }).join('');
+};
+
+// Expose kick function for inline onclick
+window._kickPlayer = (assignedId) => {
+  peerManager.kickPlayer(assignedId);
+};
+
+// JOINER: Receive mob states from host and display with lerp
+peerManager.onMobSync = (mobStates) => {
+  const seenIds = new Set();
+  for (const mob of mobStates) {
+    seenIds.add(mob.id);
+    if (mob.d) {
+      // Mob is dead — remove if exists
+      const existing = remoteMobMeshes.get(mob.id);
+      if (existing) {
+        scene.remove(existing.mesh);
+        remoteMobMeshes.delete(mob.id);
+      }
+      continue;
+    }
+    let entry = remoteMobMeshes.get(mob.id);
+    if (!entry) {
+      // Create new remote mob mesh (visual only, no AI)
+      try {
+        const mobObj = new Mob(mob.t, new THREE.Vector3(mob.x, mob.y, mob.z), scene, world);
+        mobObj.mobId = mob.id;
+        entry = {
+          mesh: mobObj.mesh,
+          mob: mobObj,
+          targetPos: { x: mob.x, y: mob.y, z: mob.z },
+          targetRotY: mob.ry,
+        };
+        remoteMobMeshes.set(mob.id, entry);
+      } catch (e) {
+        console.error('Error creating remote mob:', e);
+        continue;
+      }
+    }
+    // Update target for lerp
+    entry.targetPos = { x: mob.x, y: mob.y, z: mob.z };
+    entry.targetRotY = mob.ry;
+  }
+  // Remove mobs not in latest state
+  for (const [id, entry] of remoteMobMeshes) {
+    if (!seenIds.has(id)) {
+      scene.remove(entry.mesh);
+      remoteMobMeshes.delete(id);
+    }
+  }
+};
+
+// HOST: Peer hit a mob — apply damage
+peerManager.onMobHit = (mobId, damage) => {
+  const mob = entityManager.entities.find(e => e.mobId === mobId);
+  if (mob && !mob.isDead) {
+    mob.takeDamage(damage);
+  }
+};
+
+// JOINER: Receive item drops from host and create visual dropped items
+peerManager.onItemDrop = (itemId, count, x, y, z) => {
+  entityManager.addDroppedItem(itemId, count, new THREE.Vector3(x, y, z));
+};
+
+// Receive remote sound effects and play them based on distance
+peerManager.onRemoteSound = (sound, x, y, z) => {
+  const dist = player.position.distanceTo(new THREE.Vector3(x, y, z));
+  if (dist < 32) { // Only play within 32 blocks
+    const volume = Math.max(0, 1 - dist / 32);
+    if (sound === 'break') audioSystem.playBlockBreak(volume);
+    else if (sound === 'place') audioSystem.playBlockPlace(volume);
+    else if (sound === 'hit') audioSystem.playHit(volume);
+  }
+};
+
+// HOST: Respond to chunk requests from peers
+peerManager.onChunkRequest = (chunkIds, peerId) => {
+  for (const chunkId of chunkIds) {
+    const chunkData = world.chunks.get(chunkId);
+    if (chunkData) {
+      peerManager.sendChunkData(peerId, chunkId, chunkData);
+    }
+  }
+};
+
+// JOINER: Receive chunk data from host
+peerManager.onChunkDataReceived = (chunkId, data) => {
+  world.chunks.set(chunkId, data);
+
+  // Mark this column as already generated so terrain generator won't overwrite it
+  const parts = chunkId.split(',').map(Number);
+  const colId = `${parts[0]},${parts[2]}`;
+  generatedColumns.add(colId);
+
+  // Remove from terrain queue if pending (prevents seed-generated overwrite)
+  if (terrainQueueSet.has(colId)) {
+    terrainQueueSet.delete(colId);
+    const idx = terrainQueue.findIndex(item => item.colId === colId);
+    if (idx !== -1) terrainQueue.splice(idx, 1);
+  }
+
+  // Rebuild mesh for this chunk
+  chunkManager.updateCellGeometry(
+    parts[0] * world.chunkSize,
+    parts[1] * world.chunkSize,
+    parts[2] * world.chunkSize
+  );
+};
+
+// Chest Animation Logic
+const animatingChests = new Map();
+
+function buildChestPartGeometry(minX, minY, minZ, maxX, maxY, maxZ, isLid = false) {
+  const positions = [], normals = [], uvs = [], indices = [], colors = [];
+  const faceBrightness = [0.8, 0.8, 0.6, 1.0, 0.7, 0.9];
+  world._addChestPartMesh(0, 0, 0, minX, minY, minZ, maxX, maxY, maxZ,
+    positions, normals, uvs, indices, colors,
+    16, 256, 256, 0.5 / 256, faceBrightness, isLid);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(normals), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
+  return geo;
+}
+
+function playChestAnimation(positions, isOpen, callback) {
+  const mainPos = positions[0];
+  const chestId = `${mainPos.x},${mainPos.y},${mainPos.z}`;
+  if (animatingChests.has(chestId)) {
+    if (callback) callback();
+    return;
+  }
+
+  // Double chest bounding box calculation
+  let minX = 1 / 16, maxX = 15 / 16;
+  let minZ = 1 / 16, maxZ = 15 / 16;
+
+  // If double chest, we expand the visual bounds of the mainPos to encompass the second chest
+  if (positions.length > 1) {
+    const pos2 = positions[1];
+    if (pos2.x > mainPos.x) maxX = 1 + 15 / 16; // Expand right
+    if (pos2.x < mainPos.x) minX = -15 / 16;    // Expand left
+    if (pos2.z > mainPos.z) maxZ = 1 + 15 / 16; // Expand forward
+    if (pos2.z < mainPos.z) minZ = -15 / 16;    // Expand backward
+  }
+
+  const baseGeo = buildChestPartGeometry(minX, 0, minZ, maxX, 10 / 16, maxZ, false);
+  const lidGeo = buildChestPartGeometry(minX, 10 / 16, minZ, maxX, 14 / 16, maxZ, true);
+
+  const material = new THREE.MeshLambertMaterial({
+    map: texture, // Uses the globally scoped 'texture' from line 51
+    vertexColors: true,
+    transparent: true,
+    alphaTest: 0.1,
+  });
+
+  const baseMesh = new THREE.Mesh(baseGeo, material);
+  const lidMesh = new THREE.Mesh(lidGeo, material);
+
+  const lidPivot = new THREE.Group();
+  // Pivot point translates to hinge location (back of the chest, so minZ)
+  lidPivot.position.set(0, 10 / 16, 1 / 16);
+  // Mesh geometry was generated from Y=10/16 to 14/16 and Z=minZ to maxZ. 
+  // We shift it so its back edge perfectly hugs the pivot at Z=1/16.
+  lidMesh.position.set(0, -10 / 16, -1 / 16);
+  lidPivot.add(lidMesh);
+
+  const group = new THREE.Group();
+  group.position.set(mainPos.x, mainPos.y, mainPos.z);
+  group.add(baseMesh);
+  group.add(lidPivot);
+  scene.add(group);
+
+  // Hide the static voxels
+  positions.forEach(pos => {
+    world.setVoxel(pos.x, pos.y, pos.z, 0, false, true);
+    updateVoxelGeometry(pos.x, pos.y, pos.z);
+  });
+
+  const duration = 250;
+  const startTime = performance.now();
+  const startRot = isOpen ? 0 : -Math.PI / 2;
+  const endRot = isOpen ? -Math.PI / 2 : 0;
+
+  lidPivot.rotation.x = startRot;
+  animatingChests.set(chestId, true);
+  audioSystem.playBlockPlace(); // Optional sound to simulate chest clunk
+
+  function animate() {
+    const elapsed = performance.now() - startTime;
+    const t = Math.min(elapsed / duration, 1.0);
+    const ease = Math.sin((t * Math.PI) / 2);
+    lidPivot.rotation.x = startRot + (endRot - startRot) * ease;
+
+    if (t < 1.0) {
+      requestAnimationFrame(animate);
+    } else {
+      scene.remove(group);
+      baseGeo.dispose();
+      lidGeo.dispose();
+      animatingChests.delete(chestId);
+      if (callback) callback();
+    }
+  }
+  requestAnimationFrame(animate);
+}
+
+// HOST: Resolve returning peer spawn positions and inventory from saved state
+peerManager.onResolvePeerSpawn = (playerName) => {
+  if (_cachedPeerPositions) {
+    for (const [, data] of Object.entries(_cachedPeerPositions)) {
+      if (data.name === playerName) {
+        const result = { x: 32, y: 100, z: 32, inventory: null };
+        if (data.position) {
+          result.x = data.position.x;
+          result.y = data.position.y;
+          result.z = data.position.z;
+        }
+        if (data.inventory) {
+          result.inventory = data.inventory;
+        }
+        return result;
+      }
+    }
+  }
+  return null;
+};
+
+peerManager.onEvent = (type, payload) => {
+  if (type === 'CHEST_UPDATE_SLOT') {
+    const chestId = `${payload.x},${payload.y},${payload.z}`;
+    if (!window.chestInventories) window.chestInventories = new Map();
+    if (!window.chestInventories.has(chestId)) {
+      window.chestInventories.set(chestId, new Array(27).fill(null));
+    }
+    const inv = window.chestInventories.get(chestId);
+    inv[payload.index] = payload.item;
+    if (typeof worldKey !== 'undefined') storage.saveChest(worldKey, chestId, inv);
+
+    // Update UI if open
+    if (inventoryUI.isOpen && inventoryUI.mode === 'chest' && inventoryUI.activeChestPos) {
+      const activeId = `${inventoryUI.activeChestPos.x},${inventoryUI.activeChestPos.y},${inventoryUI.activeChestPos.z}`;
+      if (activeId === chestId) {
+        inventoryUI.render();
+      }
+    }
+  }
+};
+
+// Cache for peer positions (loaded when hosting starts)
+let _cachedPeerPositions = null;
+
+// Load cached peer positions when hosting starts
+btnMpHost.addEventListener('click', async () => {
+  // Load saved peer positions for this world
+  const saved = await storage.loadPlayerState(worldKey + '_peers');
+  _cachedPeerPositions = saved || null;
+});
+
+// ---- Chat System ----
+const chatContainer = document.getElementById('chat-container');
+const chatLog = document.getElementById('chat-log');
+const chatInput = document.getElementById('chat-input');
+let chatOpen = false;
+let chatText = '';
+
+function addChatMessage(name, message, isSystem = false) {
+  const div = document.createElement('div');
+  div.className = 'chat-message' + (isSystem ? ' system-msg' : '');
+  if (isSystem) {
+    div.textContent = message;
+  } else {
+    // Escape HTML to avoid XSS
+    const safeName = name.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeMsg = message.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    div.innerHTML = `<span class="chat-name">${safeName}</span>: ${safeMsg}`;
+  }
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+
+  // Fade out after 8 seconds
+  setTimeout(() => {
+    div.classList.add('fading');
+    setTimeout(() => {
+      if (div.parentNode) div.parentNode.removeChild(div);
+    }, 600);
+  }, 8000);
+}
+
+function openChat() {
+  chatOpen = true;
+  chatText = '';
+  chatInput.classList.remove('hidden');
+  chatInput.value = '';
+  chatContainer.classList.add('chat-active');
+  // Don't exit pointer lock — we'll capture keys at the window level
+}
+
+function closeChat() {
+  chatOpen = false;
+  chatText = '';
+  chatInput.classList.add('hidden');
+  chatInput.value = '';
+  chatContainer.classList.remove('chat-active');
+}
+
+// Capture ALL keydown events before anything else
+window.addEventListener('keydown', (e) => {
+  // If chat is open, intercept everything
+  if (chatOpen) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    if (e.key === 'Enter') {
+      const msg = chatText.trim();
+      if (msg && peerManager.isConnected) {
+        peerManager.sendChat(msg);
+        addChatMessage(peerManager.playerName || 'You', msg);
+      }
+      closeChat();
+    } else if (e.key === 'Escape') {
+      closeChat();
+    } else if (e.key === 'Backspace') {
+      chatText = chatText.slice(0, -1);
+      chatInput.value = chatText;
+    } else if (e.key.length === 1 && chatText.length < 200) {
+      // Single printable character
+      chatText += e.key;
+      chatInput.value = chatText;
+    }
+    return;
+  }
+
+  // T opens chat (only when playing, pointer locked, connected, inventory closed)
+  if ((e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.altKey) {
+    if (inputManager.isLocked && peerManager.isConnected && !inventoryUI.isOpen
+      && uiManager.state === 'PLAYING') {
+      openChat();
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }
+}, true); // <-- Use CAPTURE phase to intercept before InputManager
+
+// Also intercept keyup in capture phase to prevent InputManager stale keys
+window.addEventListener('keyup', (e) => {
+  if (chatOpen) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+}, true);
+
+peerManager.onChatMessage = (id, name, message) => {
+  addChatMessage(name, message);
+};
+
+// ---- Time Sync (joiner receives host time) ----
+peerManager.onTimeSync = (time) => {
+  if (!peerManager.isHost) {
+    skyManager.time = time;
+  }
+};
+
+// ---- Player Death/Respawn Sync ----
+peerManager.onPlayerDeath = (id) => {
+  const mesh = remotePlayerMeshes.get(id);
+  if (mesh) {
+    mesh.visible = false;
+    mesh.userData.isDead = true;
+  }
+  addChatMessage('', `${peerManager.remotePlayers.get(id)?.name || id} died`, true);
+};
+
+peerManager.onPlayerRespawn = (id, data) => {
+  const mesh = remotePlayerMeshes.get(id);
+  if (mesh) {
+    mesh.visible = true;
+    mesh.userData.isDead = false;
+    mesh.position.set(data.x || 32, (data.y || 100) - 1.6, data.z || 32);
+  }
+};
+
+// Received a hit from another player — apply damage + knockback locally
+peerManager.onPlayerHit = (data) => {
+  const damage = data.damage || 1;
+  const isCritical = data.isCritical || false;
+
+  player.takeDamage(damage);
+  audioSystem.playHit();
+
+  // Apply knockback
+  player.velocity.x += (data.kbX || 0);
+  player.velocity.y += (data.kbY || 0);
+  player.velocity.z += (data.kbZ || 0);
+
+  // Camera shake for feedback
+  const shakeIntensity = isCritical ? 0.15 : 0.08;
+  const origRotX = camera.rotation.x;
+  const origRotZ = camera.rotation.z;
+  camera.rotation.x += (Math.random() - 0.5) * shakeIntensity;
+  camera.rotation.z += (Math.random() - 0.5) * shakeIntensity;
+  setTimeout(() => {
+    camera.rotation.x = origRotX;
+    camera.rotation.z = origRotZ;
+  }, 100);
+};
+
+// JOINER: Receive world info (seed) from host and set up terrain
+peerManager.onWorldInfo = async (seed) => {
+  if (peerManager.isHost) return; // Host doesn't need this
+
+  // Use a temporary world key (not saved to DB world list)
+  // This prevents the joiner from seeing "MP:" worlds in their world list
+  const tempKey = `_mp_temp_${peerManager.roomCode}`;
+  await startWorld(tempKey, seed);
+
+  // Apply saved spawn position from host
+  if (peerManager.spawnPosition) {
+    player.position.set(
+      peerManager.spawnPosition.x,
+      peerManager.spawnPosition.y,
+      peerManager.spawnPosition.z
+    );
+  }
+
+  // Apply saved inventory from host (returning player gets their items back)
+  if (peerManager.receivedInventory) {
+    for (let i = 0; i < peerManager.receivedInventory.length; i++) {
+      inventory.slots[i] = peerManager.receivedInventory[i] || null;
+    }
+    inventoryUI.render();
+  }
 };
 
 // Position sync throttle
 let mpSyncTimer = 0;
+let mpTimeSyncTimer = 0;
+let mpInventorySyncTimer = 0;
+let mpMobSyncTimer = 0;
+
+// Remote mob display (peers only)
+const remoteMobMeshes = new Map(); // mobId -> { mesh, targetPos, targetRotY, type }
 
 let lastChunkId = '';
 let lastTime = performance.now();
 let lastSaveTime = performance.now();
 
 async function saveWorldState() {
+  // Only host or solo player saves world state — joiners shouldn't persist MP worlds
+  if (peerManager.isConnected && !peerManager.isHost) return;
   const pState = {
     position: player.position.toArray(),
     quaternion: camera.quaternion.toArray(),
     inventory: inventory.slots
   };
   await storage.savePlayerState(worldKey, pState);
+
+  // Save remote player positions (host only) so they can respawn correctly
+  if (peerManager.isHost && peerManager.isConnected) {
+    const peerPositions = {};
+    for (const [id, data] of peerManager.remotePlayers) {
+      peerPositions[id] = {
+        name: data.name,
+        position: data.position,
+        rotation: data.rotation,
+        inventory: data.inventory || null,
+      };
+    }
+    await storage.savePlayerState(worldKey + '_peers', peerPositions);
+  }
 
   const dirty = Array.from(world.dirtyChunks);
   world.dirtyChunks.clear();
@@ -821,12 +1870,21 @@ async function saveWorldState() {
     }
   }
   console.log(`Auto-saved world. Dirty chunks saved: ${savedCount}`);
+
+  // Save block change log for multiplayer persistence
+  if (blockChangeMap.size > 0) {
+    await storage.savePlayerState(worldKey + '_blocklog', getBlockChangeLog());
+  }
 }
 
 function animate() {
   requestAnimationFrame(animate);
 
-  if (uiManager.state !== 'PLAYING' || !worldKey) return; // Pause when not playing or no world loaded
+  const isPaused = uiManager.state !== 'PLAYING';
+  // In singleplayer: full pause (stop everything)
+  // In multiplayer: keep world running (entities, remote players, sky, etc.)
+  if (!worldKey) return;
+  if (isPaused && !peerManager.isConnected) return; // Singleplayer pause
 
   const time = performance.now();
   const dt = Math.min((time - lastTime) / 1000, 0.1);
@@ -861,7 +1919,101 @@ function animate() {
 
   if (playerAttackCooldown > 0) playerAttackCooldown -= dt;
   player.update(dt);
-  entityManager.update(dt, player, inventory, audioSystem);
+
+  // Per-frame smooth interpolation for all remote players
+  for (const [, mesh] of remotePlayerMeshes) {
+    const ud = mesh.userData;
+    if (ud.isDead || !ud.targetPos) continue;
+
+    // Smooth lerp toward target position (frame-rate independent)
+    const lerpFactor = 1 - Math.pow(0.00001, dt); // Very smooth but responsive
+    _mpTempVec3.set(ud.targetPos.x, ud.targetPos.y, ud.targetPos.z);
+    mesh.position.lerp(_mpTempVec3, lerpFactor);
+
+    // Smooth body rotation (yaw)
+    const targetRot = ud.targetRotY || 0;
+    let rotDiff = targetRot - mesh.rotation.y;
+    while (rotDiff > Math.PI) rotDiff -= 2 * Math.PI;
+    while (rotDiff < -Math.PI) rotDiff += 2 * Math.PI;
+    mesh.rotation.y += rotDiff * lerpFactor;
+
+    // Smooth head pitch (looking up/down)
+    if (ud.head) {
+      const pitchTarget = -(ud.targetPitchX || 0); // Negate for correct direction
+      const pitchDiff = pitchTarget - ud.head.rotation.x;
+      ud.head.rotation.x += pitchDiff * lerpFactor;
+      // Clamp head pitch
+      ud.head.rotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, ud.head.rotation.x));
+    }
+
+    // Walking animation based on distance to target
+    const dx = ud.targetPos.x - mesh.position.x;
+    const dz = ud.targetPos.z - mesh.position.z;
+    const distToTarget = Math.sqrt(dx * dx + dz * dz);
+
+    // Punch animation (overrides right arm for a short duration)
+    if (ud.punchTimer > 0) {
+      ud.punchTimer -= dt;
+      // Quick swing down then return
+      const punchProgress = 1 - (ud.punchTimer / 0.3);
+      const punchAngle = punchProgress < 0.4
+        ? -(punchProgress / 0.4) * 1.5     // Swing down
+        : -1.5 + ((punchProgress - 0.4) / 0.6) * 1.5; // Return up
+      ud.rightArm.rotation.x = punchAngle;
+    }
+
+    if (distToTarget > 0.05) {
+      // Walking — animate based on time for smooth continuous animation
+      ud.walkTime += dt * 10;
+      const swing = Math.sin(ud.walkTime) * 0.6;
+      ud.leftArm.rotation.x = swing;
+      if (ud.punchTimer <= 0) ud.rightArm.rotation.x = -swing;
+      ud.leftLeg.rotation.x = -swing;
+      ud.rightLeg.rotation.x = swing;
+    } else {
+      // Idle — smoothly decay limbs back to rest
+      const decay = Math.pow(0.001, dt);
+      ud.leftArm.rotation.x *= decay;
+      if (ud.punchTimer <= 0) ud.rightArm.rotation.x *= decay;
+      ud.leftLeg.rotation.x *= decay;
+      ud.rightLeg.rotation.x *= decay;
+    }
+
+    // Hit flash timer — restore original colors when timer expires
+    if (ud.hitFlashTimer > 0) {
+      ud.hitFlashTimer -= dt;
+      if (ud.hitFlashTimer <= 0 && ud.origColors) {
+        mesh.traverse(child => {
+          if (child.isMesh && child.material && ud.origColors.has(child)) {
+            child.material.color.setHex(ud.origColors.get(child));
+          }
+        });
+      }
+    }
+  }
+
+  // In multiplayer, only host runs mob AI/spawning. Peers skip entirely.
+  if (!peerManager.isConnected || peerManager.isHost) {
+    entityManager.update(dt, player, inventory, audioSystem);
+  }
+
+  // Per-frame smooth interpolation for remote mobs (peers only)
+  if (peerManager.isConnected && !peerManager.isHost) {
+    const mobLerpFactor = 1 - Math.pow(0.001, dt);
+    for (const [, entry] of remoteMobMeshes) {
+      if (entry.targetPos) {
+        _mpTempVec3.set(entry.targetPos.x, entry.targetPos.y, entry.targetPos.z);
+        entry.mesh.position.lerp(_mpTempVec3, mobLerpFactor);
+      }
+      // Smooth rotation
+      if (entry.targetRotY !== undefined) {
+        let rotDiff = entry.targetRotY - entry.mesh.rotation.y;
+        while (rotDiff > Math.PI) rotDiff -= 2 * Math.PI;
+        while (rotDiff < -Math.PI) rotDiff += 2 * Math.PI;
+        entry.mesh.rotation.y += rotDiff * mobLerpFactor;
+      }
+    }
+  }
   if (inventoryDirty) {
     inventoryDirty = false;
     inventoryUI.render();
@@ -885,11 +2037,42 @@ function animate() {
   }
 
   // Multiplayer position sync (10 times per second)
-  if (networkManager.isConnected) {
+  if (peerManager.isConnected) {
     mpSyncTimer += dt;
-    if (mpSyncTimer >= 0.1) {
+    if (mpSyncTimer >= 0.05) { // 20Hz for smoother movement
       mpSyncTimer = 0;
-      networkManager.sendPosition(player.position, { x: camera.rotation.x, y: camera.rotation.y });
+      peerManager.sendPosition(player.position, { x: camera.rotation.x, y: camera.rotation.y }, {
+        punching: playerAttackCooldown > 0,
+        mining: isMining,
+      });
+    }
+
+    // Host: mob sync at 5Hz
+    if (peerManager.isHost) {
+      mpMobSyncTimer += dt;
+      if (mpMobSyncTimer >= 0.2) {
+        mpMobSyncTimer = 0;
+        peerManager.sendMobSync(entityManager.getMobStates());
+      }
+    }
+
+    // Host: time sync every 5 seconds
+    if (peerManager.isHost) {
+      mpTimeSyncTimer += dt;
+      if (mpTimeSyncTimer >= 5.0) {
+        mpTimeSyncTimer = 0;
+        peerManager.setWorldTime(skyManager.time);
+        peerManager.sendTimeSync(skyManager.time);
+      }
+    }
+
+    // Joiner: send inventory sync to host every 10 seconds
+    if (!peerManager.isHost) {
+      mpInventorySyncTimer += dt;
+      if (mpInventorySyncTimer >= 10.0) {
+        mpInventorySyncTimer = 0;
+        peerManager.sendInventorySync(inventory.slots);
+      }
     }
   }
 
@@ -992,6 +2175,16 @@ function animate() {
       const chunksBefore = new Set(world.chunks.keys());
 
       terrainGenerator.generateChunkData(world, item.cx, item.cz);
+
+      // Apply any pending block changes for this column (from host replay)
+      const pendingColId = `${item.cx},${item.cz}`;
+      if (pendingBlockChanges.has(pendingColId)) {
+        const changes = pendingBlockChanges.get(pendingColId);
+        for (const change of changes) {
+          world.setVoxel(change.x, change.y, change.z, change.blockId, true, true);
+        }
+        pendingBlockChanges.delete(pendingColId);
+      }
 
       // Find newly created chunks and queue their neighbors for mesh rebuild
       // This fixes boundary faces on adjacent chunks that were already meshed

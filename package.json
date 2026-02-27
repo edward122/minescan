@@ -9,12 +9,15 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
     "vite": "^8.0.0-beta.13"
   },
   "overrides": {
     "vite": "^8.0.0-beta.13"
   },
   "dependencies": {
+    "peerjs": "^1.5.5",
     "simplex-noise": "^4.0.3",
     "three": "^0.183.1",
     "ws": "^8.19.0"
