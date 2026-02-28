@@ -116,18 +116,19 @@ export class SkyManager {
     }
 
     createClouds() {
-        this.cloudGroup = new THREE.Group();
-        this.cloudGroup.position.y = 150;
+        // Merge all clouds into a single geometry to minimize draw calls
         const cloudMat = new THREE.MeshBasicMaterial({
             color: 0xffffff,
             transparent: true,
             opacity: 0.7,
         });
+
+        const geometries = [];
+        const _tempMatrix = new THREE.Matrix4();
+
         for (let i = 0; i < 30; i++) {
-            const cluster = new THREE.Group();
             const cx = (Math.random() - 0.5) * 400;
             const cz = (Math.random() - 0.5) * 400;
-            cluster.position.set(cx, 0, cz);
 
             const numBlobs = 3 + Math.floor(Math.random() * 4);
             for (let j = 0; j < numBlobs; j++) {
@@ -135,17 +136,70 @@ export class SkyManager {
                 const h = 2 + Math.random() * 2;
                 const d = 6 + Math.random() * 10;
                 const geo = new THREE.BoxGeometry(w, h, d);
-                const blob = new THREE.Mesh(geo, cloudMat);
-                blob.position.set(
-                    (Math.random() - 0.5) * 10,
+
+                _tempMatrix.makeTranslation(
+                    cx + (Math.random() - 0.5) * 10,
                     (Math.random() - 0.5) * 2,
-                    (Math.random() - 0.5) * 8
+                    cz + (Math.random() - 0.5) * 8
                 );
-                cluster.add(blob);
+                geo.applyMatrix4(_tempMatrix);
+                geometries.push(geo);
             }
-            this.cloudGroup.add(cluster);
         }
+
+        // Merge all geometries into one
+        const mergedGeo = THREE.BufferGeometryUtils
+            ? THREE.BufferGeometryUtils.mergeGeometries(geometries)
+            : this._mergeGeometries(geometries);
+
+        for (const g of geometries) g.dispose();
+
+        const cloudMesh = new THREE.Mesh(mergedGeo, cloudMat);
+        cloudMesh.frustumCulled = false;
+
+        this.cloudGroup = new THREE.Group();
+        this.cloudGroup.position.y = 150;
+        this.cloudGroup.add(cloudMesh);
         this.scene.add(this.cloudGroup);
+    }
+
+    // Simple geometry merge fallback if BufferGeometryUtils not available
+    _mergeGeometries(geometries) {
+        let totalVerts = 0, totalIndices = 0;
+        for (const g of geometries) {
+            totalVerts += g.getAttribute('position').count;
+            totalIndices += g.index ? g.index.count : g.getAttribute('position').count;
+        }
+
+        const positions = new Float32Array(totalVerts * 3);
+        const normals = new Float32Array(totalVerts * 3);
+        const indices = new Uint32Array(totalIndices);
+        let vertOffset = 0, idxOffset = 0, vertCount = 0;
+
+        for (const g of geometries) {
+            const pos = g.getAttribute('position');
+            const norm = g.getAttribute('normal');
+            const idx = g.index;
+
+            for (let i = 0; i < pos.count * 3; i++) {
+                positions[vertOffset * 3 + i] = pos.array[i];
+                normals[vertOffset * 3 + i] = norm.array[i];
+            }
+
+            if (idx) {
+                for (let i = 0; i < idx.count; i++) {
+                    indices[idxOffset + i] = idx.array[i] + vertOffset;
+                }
+                idxOffset += idx.count;
+            }
+            vertOffset += pos.count;
+        }
+
+        const merged = new THREE.BufferGeometry();
+        merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+        merged.setIndex(new THREE.BufferAttribute(indices, 1));
+        return merged;
     }
 
     isNight() {

@@ -202,18 +202,28 @@
           <h3 class="settings-category">Video</h3>
 
           <div class="setting-row">
+            <label for="setting-preset">Graphics Preset</label>
+            <select id="setting-preset">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
             <label for="setting-fov">FOV: <span id="val-fov">75</span></label>
             <input type="range" id="setting-fov" min="30" max="110" value="75">
           </div>
 
           <div class="setting-row">
             <label for="setting-render-dist">Render Distance: <span id="val-render-dist">4</span></label>
-            <input type="range" id="setting-render-dist" min="1" max="8" value="4">
+            <input type="range" id="setting-render-dist" min="1" max="16" value="4">
           </div>
 
           <div class="setting-row">
             <label for="setting-resolution">Resolution Scale: <span id="val-resolution">100%</span></label>
-            <input type="range" id="setting-resolution" min="50" max="100" step="25" value="100">
+            <input type="range" id="setting-resolution" min="25" max="100" step="25" value="100">
           </div>
 
           <div class="setting-row">
@@ -222,6 +232,30 @@
               <option value="off">Off</option>
               <option value="basic">Basic</option>
               <option value="soft" selected>Soft</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-antialiasing">Antialiasing</label>
+            <select id="setting-antialiasing">
+              <option value="off" selected>Off</option>
+              <option value="on">On</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-clouds">Clouds</label>
+            <select id="setting-clouds">
+              <option value="on" selected>On</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <label for="setting-torch-lights">Torch Lights</label>
+            <select id="setting-torch-lights">
+              <option value="on" selected>On</option>
+              <option value="off">Off</option>
             </select>
           </div>
 

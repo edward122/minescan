@@ -4,10 +4,20 @@ const DEFAULT_SETTINGS = {
     fov: 75,
     renderDistance: 4,
     resolution: 100,
-    shadows: 'soft',
+    shadows: 'off',
     particles: 'all',
     sensitivity: 100,
-    volume: 100
+    volume: 100,
+    antialiasing: 'off',
+    clouds: 'on',
+    torchLights: 'on',
+    preset: 'medium'
+};
+
+const PRESETS = {
+    low: { renderDistance: 2, resolution: 50, shadows: 'off', particles: 'off', antialiasing: 'off', clouds: 'off', torchLights: 'off' },
+    medium: { renderDistance: 4, resolution: 75, shadows: 'off', particles: 'reduced', antialiasing: 'off', clouds: 'on', torchLights: 'on' },
+    high: { renderDistance: 8, resolution: 100, shadows: 'soft', particles: 'all', antialiasing: 'off', clouds: 'on', torchLights: 'on' },
 };
 
 export class UIManager {
@@ -49,6 +59,12 @@ export class UIManager {
         this.sensitivityVal = document.getElementById('val-sensitivity');
         this.volumeInput = document.getElementById('setting-volume');
         this.volumeVal = document.getElementById('val-volume');
+
+        // New settings
+        this.antialiasingInput = document.getElementById('setting-antialiasing');
+        this.cloudsInput = document.getElementById('setting-clouds');
+        this.torchLightsInput = document.getElementById('setting-torch-lights');
+        this.presetInput = document.getElementById('setting-preset');
 
         this.state = 'MENU'; // MENU, LOADING, PLAYING, PAUSED, SETTINGS, DEAD
         this.previousState = 'MENU';
@@ -112,6 +128,11 @@ export class UIManager {
 
         this.volumeInput.value = s.volume;
         this.volumeVal.textContent = s.volume + '%';
+
+        this.antialiasingInput.value = s.antialiasing || 'off';
+        this.cloudsInput.value = s.clouds || 'on';
+        this.torchLightsInput.value = s.torchLights || 'on';
+        this.presetInput.value = s.preset || 'custom';
     }
 
     _updateSetting(key, value) {
@@ -184,6 +205,7 @@ export class UIManager {
             const v = parseInt(e.target.value, 10);
             this.renderDistVal.textContent = v;
             this._updateSetting('renderDistance', v);
+            this._markCustomPreset();
         });
 
         // Resolution Scale
@@ -191,16 +213,46 @@ export class UIManager {
             const v = parseInt(e.target.value, 10);
             this.resolutionVal.textContent = v + '%';
             this._updateSetting('resolution', v);
+            this._markCustomPreset();
         });
 
         // Shadows
         this.shadowsInput.addEventListener('change', (e) => {
             this._updateSetting('shadows', e.target.value);
+            this._markCustomPreset();
+        });
+
+        // Antialiasing
+        this.antialiasingInput.addEventListener('change', (e) => {
+            this._updateSetting('antialiasing', e.target.value);
+            this._markCustomPreset();
+        });
+
+        // Clouds
+        this.cloudsInput.addEventListener('change', (e) => {
+            this._updateSetting('clouds', e.target.value);
+            this._markCustomPreset();
+        });
+
+        // Torch Lights
+        this.torchLightsInput.addEventListener('change', (e) => {
+            this._updateSetting('torchLights', e.target.value);
+            this._markCustomPreset();
         });
 
         // Particles
         this.particlesInput.addEventListener('change', (e) => {
             this._updateSetting('particles', e.target.value);
+            this._markCustomPreset();
+        });
+
+        // Graphics Preset
+        this.presetInput.addEventListener('change', (e) => {
+            const preset = e.target.value;
+            this._updateSetting('preset', preset);
+            if (preset !== 'custom' && PRESETS[preset]) {
+                this._applyPreset(preset);
+            }
         });
 
         // Mouse Sensitivity
@@ -350,5 +402,30 @@ export class UIManager {
 
     getSettings() {
         return { ...this._settings };
+    }
+
+    _applyPreset(presetName) {
+        const preset = PRESETS[presetName];
+        if (!preset) return;
+
+        // Apply each preset value
+        for (const [key, value] of Object.entries(preset)) {
+            this._settings[key] = value;
+        }
+
+        this._saveSettings();
+        this._applySettingsToDOM();
+
+        if (this.onSettingsChanged) {
+            this.onSettingsChanged(this._settings);
+        }
+    }
+
+    _markCustomPreset() {
+        if (this._settings.preset !== 'custom') {
+            this._settings.preset = 'custom';
+            this.presetInput.value = 'custom';
+            this._saveSettings();
+        }
     }
 }

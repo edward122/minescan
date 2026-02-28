@@ -6,6 +6,7 @@ export class LightingManager {
     constructor(scene) {
         this.scene = scene;
         this.torchPositions = new Map(); // Key: "x,y,z", Value: {x, y, z}
+        this._lightsEnabled = true;
 
         // Pre-allocate a pool of lights — only these ever get added to the scene
         this.lightPool = [];
@@ -33,6 +34,15 @@ export class LightingManager {
      * Assigns the limited light pool to the closest torches.
      */
     updateLights(playerX, playerY, playerZ) {
+        // If lights disabled via settings, hide everything and skip
+        if (!this._lightsEnabled) {
+            for (const slot of this.lightPool) {
+                slot.light.visible = false;
+                slot.assignedKey = null;
+            }
+            return;
+        }
+
         if (this.torchPositions.size === 0) {
             // No torches — hide all lights
             for (const slot of this.lightPool) {

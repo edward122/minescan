@@ -36,11 +36,12 @@ window.scene = scene;
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.set(32, 100, 64); // Start higher up to accommodate high terrain
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.sortObjects = false;  // Skip per-frame sort — chunks don't move
 container.appendChild(renderer.domElement);
 
 const inputManager = new InputManager(renderer.domElement);
@@ -170,7 +171,7 @@ function applySettings(settings) {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = settings.shadows === 'basic'
       ? THREE.BasicShadowMap
-      : THREE.PCFSoftShadowMap;
+      : THREE.PCFShadowMap;
   }
   // Need to flag all materials as needing update after shadow type change
   renderer.shadowMap.needsUpdate = true;
@@ -188,6 +189,22 @@ function applySettings(settings) {
   // Particles
   particleSystem.enabled = settings.particles !== 'off';
   particleSystem.reduced = settings.particles === 'reduced';
+
+  // Clouds
+  if (skyManager.cloudGroup) {
+    skyManager.cloudGroup.visible = settings.clouds !== 'off';
+  }
+
+  // Torch Lights
+  if (lightingManager) {
+    const enableLights = settings.torchLights !== 'off';
+    for (const slot of lightingManager.lightPool) {
+      if (!enableLights) {
+        slot.light.visible = false;
+      }
+    }
+    lightingManager._lightsEnabled = enableLights;
+  }
 }
 
 // Apply saved settings on startup

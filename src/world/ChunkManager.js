@@ -250,12 +250,11 @@ export class ChunkManager {
         const shadowDistSq = (this.world.chunkSize * 3) ** 2; // Only shadow nearby chunks
 
         for (const [, entry] of this.meshes) {
-            // Cull both opaque and transparent meshes for this chunk
-            const meshes = [];
-            if (entry.opaque) meshes.push(entry.opaque);
-            if (entry.transparent) meshes.push(entry.transparent);
+            // Process opaque and transparent without allocating arrays
+            for (let i = 0; i < 2; i++) {
+                const mesh = i === 0 ? entry.opaque : entry.transparent;
+                if (!mesh) continue;
 
-            for (const mesh of meshes) {
                 if (!mesh.geometry.boundingSphere) {
                     mesh.visible = true;
                     continue;
