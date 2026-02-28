@@ -6,7 +6,7 @@ const _projScreenMatrix = new THREE.Matrix4();
 const _cullSphere = new THREE.Sphere();
 const _cullCenter = new THREE.Vector3();
 
-const WORKER_POOL_SIZE = 4;
+const WORKER_POOL_SIZE = Math.min(navigator.hardwareConcurrency || 4, 8);
 
 export class ChunkManager {
     constructor(world, scene, opaqueMaterial, transparentMaterial) {
@@ -45,8 +45,29 @@ export class ChunkManager {
             coords.chunkX, coords.chunkY, coords.chunkZ
         );
 
-        // Sync path doesn't have hasTransparency — use transparent material to be safe
-        this._applyGeometry(cellId, coords, positions, normals, uvs, indices, colors, true);
+        let entry = this.meshes.get(cellId);
+        if (!entry) {
+            entry = { opaque: null, transparent: null };
+            this.meshes.set(cellId, entry);
+        }
+
+        if (positions.length === 0) {
+            if (entry.opaque) { this.scene.remove(entry.opaque); entry.opaque.geometry.dispose(); entry.opaque = null; }
+            if (entry.transparent) { this.scene.remove(entry.transparent); entry.transparent.geometry.dispose(); entry.transparent = null; }
+            this.meshes.delete(cellId);
+            return;
+        }
+
+        // Remove the opaque mesh — sync path merges everything into transparent
+        // Without this, the old opaque mesh stays with stale geometry (ghost blocks)
+        if (entry.opaque) {
+            this.scene.remove(entry.opaque);
+            entry.opaque.geometry.dispose();
+            entry.opaque = null;
+        }
+
+        const geoData = { positions, normals, uvs, indices, colors };
+        this._applyGeometryForKey(entry, coords, cellId, 'transparent', geoData, this.transparentMaterial);
     }
 
     // Queue a chunk for off-thread meshing
@@ -58,9 +79,8 @@ export class ChunkManager {
 
         const workerIdx = this._getFreeWorker();
         if (workerIdx === -1) {
-            // All workers busy — fall back to sync
-            this.updateCellGeometry(x, y, z);
-            return true;
+            // All workers busy — don't block, retry next frame
+            return false;
         }
 
         // Gather chunk data + neighbor data
@@ -104,78 +124,72 @@ export class ChunkManager {
     _onWorkerResult(data, workerIdx) {
         this.workerBusy[workerIdx] = false;
 
-        const { cellX, cellY, cellZ, positions, normals, uvs, colors, indices, hasTransparency } = data;
+        const { cellX, cellY, cellZ, opaque, transparent } = data;
         const cellId = `${cellX},${cellY},${cellZ}`;
         this.pendingWorker.delete(cellId);
 
         const coords = { chunkX: cellX, chunkY: cellY, chunkZ: cellZ };
-        this._applyGeometry(cellId, coords, positions, normals, uvs, indices, colors, hasTransparency);
-    }
 
-    _applyGeometry(cellId, coords, positions, normals, uvs, indices, colors, hasTransparency) {
         let entry = this.meshes.get(cellId);
-
-        if (positions.length === 0) {
-            // Empty chunk — remove any existing meshes
-            if (entry) {
-                if (entry.opaque) { this.scene.remove(entry.opaque); entry.opaque.geometry.dispose(); }
-                if (entry.transparent) { this.scene.remove(entry.transparent); entry.transparent.geometry.dispose(); }
-                this.meshes.delete(cellId);
-            }
-            return;
-        }
-
-        // Pick material based on whether chunk has transparency
-        const material = hasTransparency ? this.transparentMaterial : this.opaqueMaterial;
-        const meshKey = hasTransparency ? 'transparent' : 'opaque';
-        const otherKey = hasTransparency ? 'opaque' : 'transparent';
-
         if (!entry) {
             entry = { opaque: null, transparent: null };
             this.meshes.set(cellId, entry);
         }
 
-        // Remove the other mesh type if it exists (chunk changed from opaque to transparent or vice versa)
-        if (entry[otherKey]) {
-            this.scene.remove(entry[otherKey]);
-            entry[otherKey].geometry.dispose();
-            entry[otherKey] = null;
+        const isEmpty = opaque.positions.length === 0 && transparent.positions.length === 0;
+        if (isEmpty) {
+            if (entry.opaque) { this.scene.remove(entry.opaque); entry.opaque.geometry.dispose(); entry.opaque = null; }
+            if (entry.transparent) { this.scene.remove(entry.transparent); entry.transparent.geometry.dispose(); entry.transparent = null; }
+            this.meshes.delete(cellId);
+            return;
         }
 
-        let mesh = entry[meshKey];
+        // Apply opaque geometry
+        this._applyGeometryForKey(entry, coords, cellId, 'opaque', opaque, this.opaqueMaterial);
+        // Apply transparent geometry
+        this._applyGeometryForKey(entry, coords, cellId, 'transparent', transparent, this.transparentMaterial);
+    }
+
+    _applyGeometryForKey(entry, coords, cellId, key, geoData, material) {
+        const { positions, normals, uvs, indices, colors } = geoData;
+
+        if (positions.length === 0) {
+            // Remove this sub-mesh if it exists
+            if (entry[key]) {
+                this.scene.remove(entry[key]);
+                entry[key].geometry.dispose();
+                entry[key] = null;
+            }
+            return;
+        }
+
+        const posArr = positions instanceof Float32Array ? positions : new Float32Array(positions);
+        const normArr = normals instanceof Float32Array ? normals : new Float32Array(normals);
+        const uvArr = uvs instanceof Float32Array ? uvs : new Float32Array(uvs);
+        const idxArr = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+
+        let mesh = entry[key];
 
         if (mesh) {
-            // Re-use existing geometry — update buffer attributes in place
             const geo = mesh.geometry;
-            const posArr = positions instanceof Float32Array ? positions : new Float32Array(positions);
-            const normArr = normals instanceof Float32Array ? normals : new Float32Array(normals);
-            const uvArr = uvs instanceof Float32Array ? uvs : new Float32Array(uvs);
-            const idxArr = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
-
-            // Check if we can re-use existing buffers (same size or smaller)
+            // Re-use existing buffers if possible
             const posAttr = geo.getAttribute('position');
             if (posAttr && posAttr.array.length >= posArr.length) {
-                posAttr.array.set(posArr);
-                posAttr.count = posArr.length / 3;
-                posAttr.needsUpdate = true;
+                posAttr.array.set(posArr); posAttr.count = posArr.length / 3; posAttr.needsUpdate = true;
             } else {
                 geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
             }
 
             const normAttr = geo.getAttribute('normal');
             if (normAttr && normAttr.array.length >= normArr.length) {
-                normAttr.array.set(normArr);
-                normAttr.count = normArr.length / 3;
-                normAttr.needsUpdate = true;
+                normAttr.array.set(normArr); normAttr.count = normArr.length / 3; normAttr.needsUpdate = true;
             } else {
                 geo.setAttribute('normal', new THREE.BufferAttribute(normArr, 3));
             }
 
             const uvAttr = geo.getAttribute('uv');
             if (uvAttr && uvAttr.array.length >= uvArr.length) {
-                uvAttr.array.set(uvArr);
-                uvAttr.count = uvArr.length / 2;
-                uvAttr.needsUpdate = true;
+                uvAttr.array.set(uvArr); uvAttr.count = uvArr.length / 2; uvAttr.needsUpdate = true;
             } else {
                 geo.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
             }
@@ -184,35 +198,27 @@ export class ChunkManager {
                 const colorArr = colors instanceof Float32Array ? colors : new Float32Array(colors);
                 const colAttr = geo.getAttribute('color');
                 if (colAttr && colAttr.array.length >= colorArr.length) {
-                    colAttr.array.set(colorArr);
-                    colAttr.count = colorArr.length / 3;
-                    colAttr.needsUpdate = true;
+                    colAttr.array.set(colorArr); colAttr.count = colorArr.length / 3; colAttr.needsUpdate = true;
                 } else {
                     geo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
                 }
             }
 
             geo.setIndex(new THREE.BufferAttribute(idxArr, 1));
-            // Update draw range to match actual vertex count
             geo.setDrawRange(0, idxArr.length);
             geo.computeBoundingSphere();
         } else {
-            // Create new mesh
             const geometry = new THREE.BufferGeometry();
-            geometry.setAttribute('position', new THREE.BufferAttribute(
-                positions instanceof Float32Array ? positions : new Float32Array(positions), 3));
-            geometry.setAttribute('normal', new THREE.BufferAttribute(
-                normals instanceof Float32Array ? normals : new Float32Array(normals), 3));
-            geometry.setAttribute('uv', new THREE.BufferAttribute(
-                uvs instanceof Float32Array ? uvs : new Float32Array(uvs), 2));
+            geometry.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+            geometry.setAttribute('normal', new THREE.BufferAttribute(normArr, 3));
+            geometry.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
 
             if (colors && colors.length > 0) {
-                geometry.setAttribute('color', new THREE.BufferAttribute(
-                    colors instanceof Float32Array ? colors : new Float32Array(colors), 3));
+                const colorArr = colors instanceof Float32Array ? colors : new Float32Array(colors);
+                geometry.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
             }
 
-            geometry.setIndex(new THREE.BufferAttribute(
-                indices instanceof Uint32Array ? indices : new Uint32Array(indices), 1));
+            geometry.setIndex(new THREE.BufferAttribute(idxArr, 1));
             geometry.computeBoundingSphere();
 
             mesh = new THREE.Mesh(geometry, material);
@@ -228,7 +234,7 @@ export class ChunkManager {
                 coords.chunkZ * chunkSize
             );
 
-            entry[meshKey] = mesh;
+            entry[key] = mesh;
             this.scene.add(mesh);
         }
     }
@@ -271,24 +277,32 @@ export class ChunkManager {
         }
     }
 
-    updateVisibleChunks(playerPos, renderDistance = 2, maxNewPerFrame = 1) {
+    updateVisibleChunks(playerPos, renderDistance = 2, maxNewPerFrame = 4) {
         const coords = this.world.computeChunkCoordinates(playerPos.x, playerPos.y, playerPos.z);
 
         const keepChunks = new Set();
         const needMesh = [];
+        const renderDistSq = renderDistance * renderDistance;
+
+        // Clamp Y to terrain range
+        const yMin = Math.max(-1, coords.chunkY - renderDistance);
+        const yMax = Math.min(5, coords.chunkY + renderDistance);
 
         for (let x = -renderDistance; x <= renderDistance; x++) {
-            for (let y = -renderDistance; y <= renderDistance; y++) {
-                for (let z = -renderDistance; z <= renderDistance; z++) {
+            for (let z = -renderDistance; z <= renderDistance; z++) {
+                const xzDist = x * x + z * z;
+                if (xzDist > renderDistSq) continue; // Circular: skip corners
+
+                for (let cy = yMin; cy <= yMax; cy++) {
                     const cx = coords.chunkX + x;
-                    const cy = coords.chunkY + y;
                     const cz = coords.chunkZ + z;
                     const cellId = `${cx},${cy},${cz}`;
 
                     keepChunks.add(cellId);
 
                     if (!this.meshes.has(cellId) && !this.pendingWorker.has(cellId)) {
-                        const dist = x * x + y * y + z * z;
+                        const y = cy - coords.chunkY;
+                        const dist = xzDist + y * y;
                         needMesh.push({ cx, cy, cz, dist });
                     }
                 }

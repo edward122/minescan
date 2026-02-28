@@ -323,24 +323,36 @@ async function startWorld(selectedWorldId, seed) {
     }
   };
 
-  // Pre-generate terrain around spawn/player
+  // Pre-generate terrain around spawn — burst load for fast startup
   const spawnCoords = world.computeChunkCoordinates(player.position.x, player.position.y, player.position.z);
-  const initRenderDist = 3;
-  for (let x = -initRenderDist; x <= initRenderDist; x++) {
-    for (let z = -initRenderDist; z <= initRenderDist; z++) {
-      const cx = spawnCoords.chunkX + x;
-      const cz = spawnCoords.chunkZ + z;
-      const colId = `${cx},${cz}`;
-      generatedColumns.add(colId);
-      terrainGenerator.generateChunkData(world, cx, cz);
+  const burstRenderDist = Math.min(cachedSettings.renderDistance || 8, 6); // Burst load up to RD 6
+  const burstDistSq = burstRenderDist * burstRenderDist;
+
+  // Sort columns by distance so closest generate first
+  const burstColumns = [];
+  for (let x = -burstRenderDist; x <= burstRenderDist; x++) {
+    for (let z = -burstRenderDist; z <= burstRenderDist; z++) {
+      const dist = x * x + z * z;
+      if (dist > burstDistSq) continue; // Circular
+      burstColumns.push({ x, z, dist });
     }
+  }
+  burstColumns.sort((a, b) => a.dist - b.dist);
+
+  for (const col of burstColumns) {
+    const cx = spawnCoords.chunkX + col.x;
+    const cz = spawnCoords.chunkZ + col.z;
+    const colId = `${cx},${cz}`;
+    generatedColumns.add(colId);
+    terrainGenerator.generateChunkData(world, cx, cz);
   }
 
   // Load saved chunks from DB — overwrites generated terrain with player modifications
   const chunkLoadPromises = [];
-  for (let x = -initRenderDist; x <= initRenderDist; x++) {
-    for (let y = -1; y <= 4; y++) {
-      for (let z = -initRenderDist; z <= initRenderDist; z++) {
+  for (let x = -burstRenderDist; x <= burstRenderDist; x++) {
+    for (let z = -burstRenderDist; z <= burstRenderDist; z++) {
+      if (x * x + z * z > burstDistSq) continue;
+      for (let y = -1; y <= 5; y++) {
         const cx = spawnCoords.chunkX + x;
         const cy = spawnCoords.chunkY + y;
         const cz = spawnCoords.chunkZ + z;
@@ -363,9 +375,10 @@ async function startWorld(selectedWorldId, seed) {
   await Promise.all(chunkLoadPromises);
 
   // Build meshes after saved data is loaded
-  for (let x = -initRenderDist; x <= initRenderDist; x++) {
-    for (let y = -1; y <= 4; y++) {
-      for (let z = -initRenderDist; z <= initRenderDist; z++) {
+  for (let x = -burstRenderDist; x <= burstRenderDist; x++) {
+    for (let z = -burstRenderDist; z <= burstRenderDist; z++) {
+      if (x * x + z * z > burstDistSq) continue;
+      for (let y = -1; y <= 5; y++) {
         chunkManager.updateCellGeometry(
           (spawnCoords.chunkX + x) * world.chunkSize,
           (spawnCoords.chunkY + y) * world.chunkSize,
@@ -2119,14 +2132,16 @@ function animate() {
   if (currentChunkId !== lastChunkId) {
     lastChunkId = currentChunkId;
 
-    // Queue terrain generation for columns we haven't seen
+    // Queue terrain generation for columns we haven't seen (circular)
+    const renderDistSq = renderDist * renderDist;
     for (let x = -renderDist; x <= renderDist; x++) {
       for (let z = -renderDist; z <= renderDist; z++) {
+        const dist = x * x + z * z;
+        if (dist > renderDistSq) continue; // Circular: skip corners
         const cx = coords.chunkX + x;
         const cz = coords.chunkZ + z;
         const colId = `${cx},${cz}`;
         if (!generatedColumns.has(colId) && !terrainQueueSet.has(colId)) {
-          const dist = x * x + z * z;
           terrainQueue.push({ cx, cz, colId, dist });
           terrainQueueSet.add(colId);
         }
@@ -2135,18 +2150,21 @@ function animate() {
     // Sort so closest are at the end (popped first)
     terrainQueue.sort((a, b) => b.dist - a.dist);
 
-    // Queue DB loads
+    // Queue DB loads — Y clamped to terrain range, circular XZ
+    const yMin = Math.max(-1, coords.chunkY - renderDist);
+    const yMax = Math.min(5, coords.chunkY + renderDist);
     for (let x = -renderDist; x <= renderDist; x++) {
-      for (let y = -renderDist; y <= renderDist; y++) {
-        for (let z = -renderDist; z <= renderDist; z++) {
+      for (let z = -renderDist; z <= renderDist; z++) {
+        const xzDist = x * x + z * z;
+        if (xzDist > renderDistSq) continue; // Circular: skip corners
+        for (let cy = yMin; cy <= yMax; cy++) {
           const cx = coords.chunkX + x;
-          const cy = coords.chunkY + y;
           const cz = coords.chunkZ + z;
-
           const cellId = `${cx},${cy},${cz}`;
 
           if (!chunkManager.meshes.has(cellId) && !activeChunkRequests.has(cellId) && !chunkLoadQueueSet.has(cellId)) {
-            const dist = x * x + y * y + z * z;
+            const y = cy - coords.chunkY;
+            const dist = xzDist + y * y;
             chunkLoadQueue.push({ cx, cy, cz, cellId, dist });
             chunkLoadQueueSet.add(cellId);
           }
@@ -2160,19 +2178,12 @@ function animate() {
     chunkManager.updateVisibleChunks(camera.position, renderDist);
   }
 
-  // Time-budgeted processing — spend at most 4ms per frame on terrain + meshing
-  const budgetStart = performance.now();
-  const FRAME_BUDGET_MS = 4;
-
-  // Process terrain queue — synchronous terrain generation with neighbor rebuild
-  while (terrainQueue.length > 0 && (performance.now() - budgetStart) < FRAME_BUDGET_MS) {
+  // Process at most 1 terrain column per frame to prevent FPS drops
+  if (terrainQueue.length > 0) {
     const item = terrainQueue.pop();
     terrainQueueSet.delete(item.colId);
     if (!generatedColumns.has(item.colId)) {
       generatedColumns.add(item.colId);
-
-      // Track which chunks exist before generation
-      const chunksBefore = new Set(world.chunks.keys());
 
       terrainGenerator.generateChunkData(world, item.cx, item.cz);
 
@@ -2186,15 +2197,17 @@ function animate() {
         pendingBlockChanges.delete(pendingColId);
       }
 
-      // Find newly created chunks and queue their neighbors for mesh rebuild
-      // This fixes boundary faces on adjacent chunks that were already meshed
-      for (const chunkId of world.chunks.keys()) {
-        if (!chunksBefore.has(chunkId)) {
-          const parts = chunkId.split(',').map(Number);
-          const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+      // Queue neighbor mesh rebuilds for this column's chunks
+      // Instead of copying all chunk keys, directly check which Y-level chunks
+      // were created and rebuild their neighbors
+      const cs = world.chunkSize;
+      const maxChunkY = Math.ceil(140 / cs); // Max terrain height / chunk size
+      const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+      for (let cy = 0; cy <= maxChunkY; cy++) {
+        const chunkId = `${item.cx},${cy},${item.cz}`;
+        if (world.chunks.has(chunkId)) {
           for (const [dx, dy, dz] of dirs) {
-            const neighborId = `${parts[0] + dx},${parts[1] + dy},${parts[2] + dz}`;
-            // Only rebuild neighbors that already have meshes (stale boundary)
+            const neighborId = `${item.cx + dx},${cy + dy},${item.cz + dz}`;
             if (chunkManager.meshes.has(neighborId)) {
               pendingMeshRebuilds.add(neighborId);
             }
@@ -2206,7 +2219,7 @@ function animate() {
 
   // Process DB load queue — only START async loads, don't block
   // Limit concurrent async loads to avoid flooding
-  const MAX_CONCURRENT_LOADS = 4;
+  const MAX_CONCURRENT_LOADS = 8;
   let activeCount = activeChunkRequests.size;
   while (chunkLoadQueue.length > 0 && activeCount < MAX_CONCURRENT_LOADS) {
     const item = chunkLoadQueue.pop();
@@ -2232,16 +2245,21 @@ function animate() {
     }
   }
 
-  // Process pending mesh rebuilds — dispatch to workers (non-blocking)
+  // Process pending mesh rebuilds — cap per frame to prevent stuttering
   if (pendingMeshRebuilds.size > 0) {
     const toRemove = [];
+    let meshDispatchCount = 0;
+    const MAX_MESH_DISPATCHES = 4;
     for (const cellId of pendingMeshRebuilds) {
+      if (meshDispatchCount >= MAX_MESH_DISPATCHES) break;
       const parts = cellId.split(',').map(Number);
       const dispatched = chunkManager.updateCellGeometryAsync(
         parts[0] * world.chunkSize, parts[1] * world.chunkSize, parts[2] * world.chunkSize
       );
-      if (dispatched) toRemove.push(cellId);
-      else break; // Workers full, try again next frame
+      if (dispatched) {
+        toRemove.push(cellId);
+        meshDispatchCount++;
+      } else break; // Workers full, try again next frame
     }
     for (const id of toRemove) {
       pendingMeshRebuilds.delete(id);

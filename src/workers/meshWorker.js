@@ -244,27 +244,36 @@ function _addChestPartMesh(x, y, z, minX, minY, minZ, maxX, maxY, maxZ,
 
 self.onmessage = function (e) {
     const { cellX, cellY, cellZ, chunkSize, chunkData, neighborData } = e.data;
-
     const chunkSliceSize = chunkSize * chunkSize;
 
-    // Local voxel lookup — reads from chunkData or neighborData
+    // Early exit: skip completely empty chunks
+    if (chunkData) {
+        let isEmpty = true;
+        for (let i = 0, len = chunkData.length; i < len; i++) {
+            if (chunkData[i] !== 0) { isEmpty = false; break; }
+        }
+        if (isEmpty) {
+            const empty = new Float32Array(0);
+            const emptyIdx = new Uint32Array(0);
+            const emptyGeo = { positions: empty, normals: empty, uvs: empty, colors: empty, indices: emptyIdx };
+            self.postMessage({ cellX, cellY, cellZ, opaque: emptyGeo, transparent: { ...emptyGeo } }, []);
+            return;
+        }
+    }
+
     function emod(n, m) { return ((n % m) + m) % m; }
 
     function getVoxel(x, y, z) {
         const cx = Math.floor(x / chunkSize);
         const cy = Math.floor(y / chunkSize);
         const cz = Math.floor(z / chunkSize);
-
         let data;
         if (cx === cellX && cy === cellY && cz === cellZ) {
             data = chunkData;
         } else {
-            const dx = cx - cellX, dy = cy - cellY, dz = cz - cellZ;
-            const key = `${dx},${dy},${dz}`;
-            data = neighborData[key];
+            data = neighborData[`${cx - cellX},${cy - cellY},${cz - cellZ}`];
         }
         if (!data) return 0;
-
         const lx = emod(x, chunkSize);
         const ly = emod(y, chunkSize);
         const lz = emod(z, chunkSize);
@@ -275,16 +284,33 @@ self.onmessage = function (e) {
     const halfPixel = 0.5 / tileTextureWidth;
     const faceBrightness = [0.8, 0.8, 0.6, 1.0, 0.7, 0.9];
 
-    const positions = [];
-    const normals = [];
-    const uvs = [];
-    const indices = [];
-    const colors = [];
-    let hasTransparency = false;
+    // Dual geometry buffers: opaque + transparent
+    const op = { positions: [], normals: [], uvs: [], indices: [], colors: [] };
+    const tr = { positions: [], normals: [], uvs: [], indices: [], colors: [] };
 
     const startX = cellX * chunkSize;
     const startY = cellY * chunkSize;
     const startZ = cellZ * chunkSize;
+
+    // Precompute heightmap for fast cave darkness
+    const skyLevel = 80;
+    const heightMap = new Uint8Array(chunkSize * chunkSize);
+    for (let hz = 0; hz < chunkSize; hz++) {
+        for (let hx = 0; hx < chunkSize; hx++) {
+            let topY = 0;
+            for (let hy = chunkSize - 1; hy >= 0; hy--) {
+                const vy = startY + hy;
+                if (vy > skyLevel) continue;
+                const idx = hy * chunkSliceSize + hz * chunkSize + hx;
+                const v = chunkData ? chunkData[idx] : 0;
+                if (v !== 0 && v !== 8) { topY = vy; break; }
+            }
+            heightMap[hz * chunkSize + hx] = topY;
+        }
+    }
+
+    // Helper: pick the right buffer for a voxel type
+    function getBuf(voxel) { return isTransparent(voxel) ? tr : op; }
 
     for (let y = 0; y < chunkSize; ++y) {
         const voxelY = startY + y;
@@ -295,27 +321,25 @@ self.onmessage = function (e) {
                 const voxel = getVoxel(voxelX, voxelY, voxelZ);
                 if (!voxel) continue;
 
-                if (isTransparent(voxel)) hasTransparency = true;
+                const buf = getBuf(voxel);
 
                 if (isCrossShape(voxel)) {
-                    // Cross shape
                     const [texU, texV] = getBlockTextureCoords(voxel, 0);
                     const u0 = (texU * tileSize) / tileTextureWidth + halfPixel;
                     const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
                     const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
                     const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
-
                     for (const face of crossFaces) {
-                        const ndx = positions.length / 3;
+                        const ndx = buf.positions.length / 3;
                         for (let i = 0; i < 4; i++) {
                             const c = face.corners[i];
-                            positions.push(c[0] + x, c[1] + y, c[2] + z);
-                            normals.push(face.normal[0], face.normal[1], face.normal[2]);
-                            colors.push(0.9, 0.9, 0.9);
+                            buf.positions.push(c[0] + x, c[1] + y, c[2] + z);
+                            buf.normals.push(face.normal[0], face.normal[1], face.normal[2]);
+                            buf.colors.push(0.9, 0.9, 0.9);
                         }
-                        uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
-                        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-                        indices.push(ndx + 2, ndx + 1, ndx, ndx + 3, ndx + 1, ndx + 2);
+                        buf.uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+                        buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                        buf.indices.push(ndx + 2, ndx + 1, ndx, ndx + 3, ndx + 1, ndx + 2);
                     }
                     continue;
                 }
@@ -326,14 +350,11 @@ self.onmessage = function (e) {
                     const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
                     const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
                     const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
-
                     const faceU0 = u0 + (u1 - u0) * (6 / 16);
                     const faceU1 = u0 + (u1 - u0) * (10 / 16);
-
                     const minX = x + 7 / 16, maxX = x + 9 / 16;
                     const minY = y, maxY = y + 10 / 16;
                     const minZ = z + 7 / 16, maxZ = z + 9 / 16;
-
                     const torchFaces = [
                         { dir: [-1, 0, 0], corners: [{ pos: [minX, maxY, minZ], uv: [0, 1] }, { pos: [minX, minY, minZ], uv: [0, 0] }, { pos: [minX, maxY, maxZ], uv: [1, 1] }, { pos: [minX, minY, maxZ], uv: [1, 0] }] },
                         { dir: [1, 0, 0], corners: [{ pos: [maxX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, maxY, minZ], uv: [1, 1] }, { pos: [maxX, minY, minZ], uv: [1, 0] }] },
@@ -342,21 +363,17 @@ self.onmessage = function (e) {
                         { dir: [0, 0, -1], corners: [{ pos: [maxX, minY, minZ], uv: [0, 0] }, { pos: [minX, minY, minZ], uv: [1, 0] }, { pos: [maxX, maxY, minZ], uv: [0, 1] }, { pos: [minX, maxY, minZ], uv: [1, 1] }] },
                         { dir: [0, 0, 1], corners: [{ pos: [minX, minY, maxZ], uv: [0, 0] }, { pos: [maxX, minY, maxZ], uv: [1, 0] }, { pos: [minX, maxY, maxZ], uv: [0, 1] }, { pos: [maxX, maxY, maxZ], uv: [1, 1] }] },
                     ];
-
-                    for (let faceIndex = 0; faceIndex < 6; faceIndex++) {
-                        const { dir, corners } = torchFaces[faceIndex];
-                        const ndx = positions.length / 3;
+                    for (let fi = 0; fi < 6; fi++) {
+                        const { dir, corners } = torchFaces[fi];
+                        const ndx = buf.positions.length / 3;
                         for (let i = 0; i < 4; i++) {
                             const { pos, uv } = corners[i];
-                            positions.push(pos[0], pos[1], pos[2]);
-                            normals.push(dir[0], dir[1], dir[2]);
-                            colors.push(1, 1, 1);
-
-                            const mappedU = uv[0] === 0 ? faceU0 : faceU1;
-                            const mappedV = uv[1] === 0 ? v0 : v1;
-                            uvs.push(mappedU, mappedV);
+                            buf.positions.push(pos[0], pos[1], pos[2]);
+                            buf.normals.push(dir[0], dir[1], dir[2]);
+                            buf.colors.push(1, 1, 1);
+                            buf.uvs.push(uv[0] === 0 ? faceU0 : faceU1, uv[1] === 0 ? v0 : v1);
                         }
-                        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                        buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
                     }
                     continue;
                 }
@@ -367,200 +384,92 @@ self.onmessage = function (e) {
                     const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
                     const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
                     const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
-
                     const pY = y + 0.03;
-
-                    // Top Face
-                    let ndx = positions.length / 3;
-                    positions.push(
-                        x, pY, z + 1,
-                        x + 1, pY, z + 1,
-                        x, pY, z,
-                        x + 1, pY, z
-                    );
-                    normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
-                    colors.push(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-                    uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
-                    indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-
-                    // Bottom Face
-                    ndx = positions.length / 3;
-                    positions.push(
-                        x + 1, pY - 0.01, z + 1,
-                        x, pY - 0.01, z + 1,
-                        x + 1, pY - 0.01, z,
-                        x, pY - 0.01, z
-                    );
-                    normals.push(0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0);
-                    colors.push(0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6);
-                    uvs.push(u1, v0, u0, v0, u1, v1, u0, v1);
-                    indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-
+                    let ndx = buf.positions.length / 3;
+                    buf.positions.push(x, pY, z + 1, x + 1, pY, z + 1, x, pY, z, x + 1, pY, z);
+                    buf.normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+                    buf.colors.push(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+                    buf.uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+                    buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                    ndx = buf.positions.length / 3;
+                    buf.positions.push(x + 1, pY - 0.01, z + 1, x, pY - 0.01, z + 1, x + 1, pY - 0.01, z, x, pY - 0.01, z);
+                    buf.normals.push(0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0);
+                    buf.colors.push(0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6);
+                    buf.uvs.push(u1, v0, u0, v0, u1, v1, u0, v1);
+                    buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
                     continue;
                 }
 
                 if (voxel === 55) { // Cactus
-                    addBoxMesh(x, y, z, x + 1 / 16, y, z + 1 / 16, x + 15 / 16, y + 1, z + 15 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x + 1 / 16, y, z + 1 / 16, x + 15 / 16, y + 1, z + 15 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
                     continue;
                 }
-
                 if (voxel === 54) { // Lantern
-                    // Main body
-                    addBoxMesh(x, y, z, x + 4 / 16, y, z + 4 / 16, x + 12 / 16, y + 12 / 16, z + 12 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    // Chain
-                    addBoxMesh(x, y, z, x + 7 / 16, y + 12 / 16, z + 7 / 16, x + 9 / 16, y + 1, z + 9 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x + 4 / 16, y, z + 4 / 16, x + 12 / 16, y + 12 / 16, z + 12 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x + 7 / 16, y + 12 / 16, z + 7 / 16, x + 9 / 16, y + 1, z + 9 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
                     continue;
                 }
 
-                // ===== Phase 2 Custom Meshes =====
-
-                if (voxel === 18 || voxel === 82) { // Chest or Chest Open
-                    let minX = x + 1 / 16, maxX = x + 15 / 16;
-                    let minZ = z + 1 / 16, maxZ = z + 15 / 16;
-
-                    // Check neighbors to seamlessly join double chests
-                    const nxp = getVoxel(x + 1, y, z);
-                    const nxn = getVoxel(x - 1, y, z);
-                    const nzp = getVoxel(x, y, z + 1);
-                    const nzn = getVoxel(x, y, z - 1);
-
-                    if (nxp === 18 || nxp === 82) maxX = x + 1;
-                    if (nxn === 18 || nxn === 82) minX = x;
-                    if (nzp === 18 || nzp === 82) maxZ = z + 1;
-                    if (nzn === 18 || nzn === 82) minZ = z;
-
-                    if (voxel === 18) { // Closed
-                        _addChestPartMesh(x, y, z, minX, y, minZ, maxX, y + 10 / 16, maxZ,
-                            positions, normals, uvs, indices, colors,
-                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, false);
-                        _addChestPartMesh(x, y, z, minX, y + 10 / 16, minZ, maxX, y + 14 / 16, maxZ,
-                            positions, normals, uvs, indices, colors,
-                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, true);
-                    } else { // Open
-                        _addChestPartMesh(x, y, z, minX, y, minZ, maxX, y + 10 / 16, maxZ,
-                            positions, normals, uvs, indices, colors,
-                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, false);
-                        _addChestPartMesh(x, y, z, minX, y + 10 / 16, z + 11 / 16, maxX, y + 24 / 16, z + 15 / 16,
-                            positions, normals, uvs, indices, colors,
-                            tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, true);
+                if (voxel === 18 || voxel === 82) { // Chest
+                    let cMinX = x + 1 / 16, cMaxX = x + 15 / 16, cMinZ = z + 1 / 16, cMaxZ = z + 15 / 16;
+                    const nxp = getVoxel(x + 1, y, z), nxn = getVoxel(x - 1, y, z), nzp = getVoxel(x, y, z + 1), nzn = getVoxel(x, y, z - 1);
+                    if (nxp === 18 || nxp === 82) cMaxX = x + 1;
+                    if (nxn === 18 || nxn === 82) cMinX = x;
+                    if (nzp === 18 || nzp === 82) cMaxZ = z + 1;
+                    if (nzn === 18 || nzn === 82) cMinZ = z;
+                    if (voxel === 18) {
+                        _addChestPartMesh(x, y, z, cMinX, y, cMinZ, cMaxX, y + 10 / 16, cMaxZ, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, false);
+                        _addChestPartMesh(x, y, z, cMinX, y + 10 / 16, cMinZ, cMaxX, y + 14 / 16, cMaxZ, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, true);
+                    } else {
+                        _addChestPartMesh(x, y, z, cMinX, y, cMinZ, cMaxX, y + 10 / 16, cMaxZ, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, false);
+                        _addChestPartMesh(x, y, z, cMinX, y + 10 / 16, z + 11 / 16, cMaxX, y + 24 / 16, z + 15 / 16, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness, true);
                     }
                     continue;
                 }
 
-                if (voxel === 70 || voxel === 78) { // Door closed (bottom or top)
-                    // Hinge on z=0, door extends along z, flat against x
-                    addBoxMesh(x, y, z, x, y, z, x + 3 / 16, y + 1, z + 1, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                if (voxel === 70 || voxel === 78) { addBoxMesh(x, y, z, x, y, z, x + 3 / 16, y + 1, z + 1, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness); continue; }
+                if (voxel === 79 || voxel === 80) { addBoxMesh(x, y, z, x, y, z, x + 1, y + 1, z + 3 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness); continue; }
+                if (voxel === 71) {
+                    addBoxMesh(x, y, z, x + 6 / 16, y, z + 6 / 16, x + 10 / 16, y + 1, z + 10 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x, y + 12 / 16, z + 7 / 16, x + 1, y + 15 / 16, z + 9 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x, y + 6 / 16, z + 7 / 16, x + 1, y + 9 / 16, z + 9 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
                     continue;
                 }
-
-                if (voxel === 79 || voxel === 80) { // Door open (bottom or top)
-                    // Swing open 90 degrees (flat against z)
-                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 1, z + 3 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    continue;
-                }
-
-                if (voxel === 71) { // Fence — center post + rails
-                    // Center post (4/16 × 16/16 × 4/16)
-                    addBoxMesh(x, y, z, x + 6 / 16, y, z + 6 / 16, x + 10 / 16, y + 1, z + 10 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    // Top rail
-                    addBoxMesh(x, y, z, x, y + 12 / 16, z + 7 / 16, x + 1, y + 15 / 16, z + 9 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    // Bottom rail
-                    addBoxMesh(x, y, z, x, y + 6 / 16, z + 7 / 16, x + 1, y + 9 / 16, z + 9 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    continue;
-                }
-
-                if (voxel === 72) { // Ladder — flat plane on back face
+                if (voxel === 72) { // Ladder
                     const [texU, texV] = getBlockTextureCoords(voxel, 0);
                     const u0 = (texU * tileSize) / tileTextureWidth + halfPixel;
                     const u1 = ((texU + 1) * tileSize) / tileTextureWidth - halfPixel;
                     const v0 = 1 - ((texV + 1) * tileSize) / tileTextureHeight + halfPixel;
                     const v1 = 1 - (texV * tileSize) / tileTextureHeight - halfPixel;
-
-                    const lz = z + 1 / 16; // Against back wall
-                    // Front face
-                    let ndx = positions.length / 3;
-                    positions.push(x, y, lz, x + 1, y, lz, x, y + 1, lz, x + 1, y + 1, lz);
-                    normals.push(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1);
-                    colors.push(0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9);
-                    uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
-                    indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
-                    // Back face
-                    ndx = positions.length / 3;
-                    positions.push(x + 1, y, lz - 0.01, x, y, lz - 0.01, x + 1, y + 1, lz - 0.01, x, y + 1, lz - 0.01);
-                    normals.push(0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1);
-                    colors.push(0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7);
-                    uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
-                    indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                    const lz = z + 1 / 16;
+                    let ndx = buf.positions.length / 3;
+                    buf.positions.push(x, y, lz, x + 1, y, lz, x, y + 1, lz, x + 1, y + 1, lz);
+                    buf.normals.push(0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1);
+                    buf.colors.push(0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9);
+                    buf.uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+                    buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                    ndx = buf.positions.length / 3;
+                    buf.positions.push(x + 1, y, lz - 0.01, x, y, lz - 0.01, x + 1, y + 1, lz - 0.01, x, y + 1, lz - 0.01);
+                    buf.normals.push(0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1);
+                    buf.colors.push(0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7);
+                    buf.uvs.push(u0, v0, u1, v0, u0, v1, u1, v1);
+                    buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
                     continue;
                 }
-
-                if (voxel === 73) { // Slab — half-height block (bottom half)
-                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 0.5, z + 1, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                if (voxel === 73) { addBoxMesh(x, y, z, x, y, z, x + 1, y + 0.5, z + 1, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness); continue; }
+                if (voxel === 74) {
+                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 0.5, z + 1, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x, y + 0.5, z + 0.5, x + 1, y + 1, z + 1, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
                     continue;
                 }
-
-                if (voxel === 74) { // Stairs — L-shape (bottom slab + top half)
-                    // Bottom full slab
-                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 0.5, z + 1, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    // Top back half
-                    addBoxMesh(x, y, z, x, y + 0.5, z + 0.5, x + 1, y + 1, z + 1, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                if (voxel === 75) {
+                    addBoxMesh(x, y, z, x, y + 0.5, z + 7 / 16, x + 1, y + 1, z + 9 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
+                    addBoxMesh(x, y, z, x + 7 / 16, y, z + 7 / 16, x + 9 / 16, y + 0.5, z + 9 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
                     continue;
                 }
-
-                if (voxel === 75) { // Sign — board + post
-                    // Board (thin, centered, upper half)
-                    addBoxMesh(x, y, z, x, y + 0.5, z + 7 / 16, x + 1, y + 1, z + 9 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    // Post (small stick below)
-                    addBoxMesh(x, y, z, x + 7 / 16, y, z + 7 / 16, x + 9 / 16, y + 0.5, z + 9 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    continue;
-                }
-
-                if (voxel === 76) { // Trapdoor — flat plane on bottom
-                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 3 / 16, z + 1, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    continue;
-                }
-
-                if (voxel === 81) { // Trapdoor Open — flat against wall
-                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 1, z + 3 / 16, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    continue;
-                }
-
-                if (voxel === 77) { // Bed — low raised platform
-                    addBoxMesh(x, y, z, x, y, z, x + 1, y + 9 / 16, z + 1, voxel,
-                        positions, normals, uvs, indices, colors,
-                        tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness);
-                    continue;
-                }
+                if (voxel === 76) { addBoxMesh(x, y, z, x, y, z, x + 1, y + 3 / 16, z + 1, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness); continue; }
+                if (voxel === 81) { addBoxMesh(x, y, z, x, y, z, x + 1, y + 1, z + 3 / 16, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness); continue; }
+                if (voxel === 77) { addBoxMesh(x, y, z, x, y, z, x + 1, y + 9 / 16, z + 1, voxel, buf.positions, buf.normals, buf.uvs, buf.indices, buf.colors, tileSize, tileTextureWidth, tileTextureHeight, halfPixel, faceBrightness); continue; }
 
                 // ===== Standard block face rendering =====
                 for (let faceIndex = 0; faceIndex < 6; faceIndex++) {
@@ -568,67 +477,60 @@ self.onmessage = function (e) {
                     const neighbor = getVoxel(voxelX + dir[0], voxelY + dir[1], voxelZ + dir[2]);
                     const nTrans = isTransparent(neighbor);
                     const shouldRenderFace = nTrans && !(isTransparent(voxel) && voxel === neighbor);
-
                     if (shouldRenderFace) {
-                        const ndx = positions.length / 3;
+                        const ndx = buf.positions.length / 3;
                         const [texU, texV] = getBlockTextureCoords(voxel, faceIndex);
-
-                        // Water pooling: lower the top face if the block above (or current block) is water, and block directly above is AIR
                         let isWaterTop = false;
                         if (voxel === 8 && faceIndex === 3) {
-                            const blockAbove = getVoxel(voxelX, voxelY + 1, voxelZ);
-                            if (blockAbove !== 8) {
-                                isWaterTop = true;
-                            }
+                            if (getVoxel(voxelX, voxelY + 1, voxelZ) !== 8) isWaterTop = true;
                         }
-
-                        // Cave darkness
+                        // Fast cave darkness using heightmap
                         let depthDim = 1.0;
-                        const skyLevel = 80;
                         if (voxelY < skyLevel) {
-                            let hasSkyAccess = false;
-                            for (let checkY = voxelY + 1; checkY <= Math.min(voxelY + 10, skyLevel + 5); checkY++) {
-                                if (getVoxel(voxelX, checkY, voxelZ) === 0) {
-                                    if (checkY >= skyLevel) { hasSkyAccess = true; break; }
-                                } else break;
-                            }
-                            if (!hasSkyAccess) {
-                                const depth = skyLevel - voxelY;
-                                depthDim = Math.max(0.25, 1.0 - depth * 0.015);
+                            const colTopY = heightMap[z * chunkSize + x];
+                            if (colTopY >= skyLevel || voxelY < colTopY - 3) {
+                                depthDim = Math.max(0.25, 1.0 - (skyLevel - voxelY) * 0.015);
                             }
                         }
-
                         for (const { pos, uv } of corners) {
                             let py = pos[1] + y;
-                            if (isWaterTop) {
-                                // Lower the water surface slightly
-                                py -= 0.15;
-                            }
-                            positions.push(pos[0] + x, py, pos[2] + z);
-                            normals.push(dir[0], dir[1], dir[2]);
+                            if (isWaterTop) py -= 0.15;
+                            buf.positions.push(pos[0] + x, py, pos[2] + z);
+                            buf.normals.push(dir[0], dir[1], dir[2]);
                             const brightness = faceBrightness[faceIndex] * depthDim;
-                            colors.push(brightness, brightness, brightness);
-                            uvs.push(
+                            buf.colors.push(brightness, brightness, brightness);
+                            buf.uvs.push(
                                 ((texU + uv[0]) * tileSize) / tileTextureWidth + (uv[0] === 0 ? halfPixel : -halfPixel),
                                 1 - ((texV + 1 - uv[1]) * tileSize) / tileTextureHeight + (uv[1] === 0 ? halfPixel : -halfPixel)
                             );
                         }
-                        indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
+                        buf.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3);
                     }
                 }
             }
         }
     }
 
-    // Convert to typed arrays for transfer
-    const posArr = new Float32Array(positions);
-    const normArr = new Float32Array(normals);
-    const uvArr = new Float32Array(uvs);
-    const colorArr = new Float32Array(colors);
-    const idxArr = new Uint32Array(indices);
-
-    self.postMessage(
-        { cellX, cellY, cellZ, positions: posArr, normals: normArr, uvs: uvArr, colors: colorArr, indices: idxArr, hasTransparency },
-        [posArr.buffer, normArr.buffer, uvArr.buffer, colorArr.buffer, idxArr.buffer]
-    );
+    // Convert to typed arrays and transfer
+    function toTyped(b) {
+        return {
+            positions: new Float32Array(b.positions),
+            normals: new Float32Array(b.normals),
+            uvs: new Float32Array(b.uvs),
+            colors: new Float32Array(b.colors),
+            indices: new Uint32Array(b.indices)
+        };
+    }
+    const opaqueData = toTyped(op);
+    const transparentData = toTyped(tr);
+    const transferList = [];
+    for (const d of [opaqueData, transparentData]) {
+        if (d.positions.length) transferList.push(d.positions.buffer);
+        if (d.normals.length) transferList.push(d.normals.buffer);
+        if (d.uvs.length) transferList.push(d.uvs.buffer);
+        if (d.colors.length) transferList.push(d.colors.buffer);
+        if (d.indices.length) transferList.push(d.indices.buffer);
+    }
+    self.postMessage({ cellX, cellY, cellZ, opaque: opaqueData, transparent: transparentData }, transferList);
 };
+

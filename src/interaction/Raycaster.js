@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BlockRegistry } from '../world/BlockRegistry.js';
 
 export class VoxelRaycaster {
     constructor(world) {
@@ -45,16 +46,22 @@ export class VoxelRaycaster {
         while (t <= maxDistance) {
             const voxel = this.world.getVoxel(ix, iy, iz);
             if (voxel) {
-                const normal = new THREE.Vector3();
-                if (steppedIndex === 0) normal.x = -stepX;
-                if (steppedIndex === 1) normal.y = -stepY;
-                if (steppedIndex === 2) normal.z = -stepZ;
+                // Skip fluid blocks (water, lava) — can't target them
+                const blockDef = BlockRegistry[voxel];
+                if (blockDef && blockDef.isFluid) {
+                    // Treat as air, continue traversal
+                } else {
+                    const normal = new THREE.Vector3();
+                    if (steppedIndex === 0) normal.x = -stepX;
+                    if (steppedIndex === 1) normal.y = -stepY;
+                    if (steppedIndex === 2) normal.z = -stepZ;
 
-                return {
-                    position: new THREE.Vector3(ix, iy, iz),
-                    normal,
-                    voxel
-                };
+                    return {
+                        position: new THREE.Vector3(ix, iy, iz),
+                        normal,
+                        voxel
+                    };
+                }
             }
 
             if (txMax < tyMax) {

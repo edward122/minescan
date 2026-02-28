@@ -15,8 +15,8 @@ export class SkyManager {
 
         this.sunLight = new THREE.DirectionalLight(0xffffee, 0.8);
         this.sunLight.castShadow = true;
-        this.sunLight.shadow.mapSize.width = 1024;
-        this.sunLight.shadow.mapSize.height = 1024;
+        this.sunLight.shadow.mapSize.width = 512;
+        this.sunLight.shadow.mapSize.height = 512;
         this.sunLight.shadow.camera.near = 0.5;
         this.sunLight.shadow.camera.far = 400;
         this.sunLight.shadow.camera.left = -100;

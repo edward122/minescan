@@ -351,6 +351,27 @@ export class VoxelWorld {
         const startY = cellY * chunkSize;
         const startZ = cellZ * chunkSize;
 
+        // Precompute heightmap for fast cave darkness
+        const skyLevel = 80;
+        const chunkId = `${cellX},${cellY},${cellZ}`;
+        const chunkData = this.chunks.get(chunkId);
+        const heightMap = new Uint8Array(chunkSize * chunkSize);
+        for (let z = 0; z < chunkSize; z++) {
+            for (let x = 0; x < chunkSize; x++) {
+                let topY = 0;
+                for (let y = chunkSize - 1; y >= 0; y--) {
+                    const voxelY = startY + y;
+                    if (voxelY > skyLevel) continue;
+                    if (chunkData) {
+                        const idx = y * this.chunkSliceSize + z * chunkSize + x;
+                        const v = chunkData[idx];
+                        if (v !== 0 && v !== 8) { topY = voxelY; break; }
+                    }
+                }
+                heightMap[z * chunkSize + x] = topY;
+            }
+        }
+
         for (let y = 0; y < chunkSize; ++y) {
             const voxelY = startY + y;
             for (let z = 0; z < chunkSize; ++z) {
@@ -386,18 +407,11 @@ export class VoxelWorld {
                                 const ndx = positions.length / 3;
                                 const [texU, texV] = getBlockTextureCoords(voxel, faceIndex);
 
-                                // Cave darkness: dim blocks that are underground
+                                // Fast cave darkness using heightmap
                                 let depthDim = 1.0;
-                                const skyLevel = 80; // seaLevel
                                 if (voxelY < skyLevel) {
-                                    // Check if there's a solid block above (rough sky check)
-                                    let hasSkyAccess = false;
-                                    for (let checkY = voxelY + 1; checkY <= Math.min(voxelY + 10, skyLevel + 5); checkY++) {
-                                        if (this.getVoxel(voxelX, checkY, voxelZ) === 0) {
-                                            if (checkY >= skyLevel) { hasSkyAccess = true; break; }
-                                        } else break;
-                                    }
-                                    if (!hasSkyAccess) {
+                                    const colTopY = heightMap[z * chunkSize + x];
+                                    if (colTopY >= skyLevel || voxelY < colTopY - 3) {
                                         const depth = skyLevel - voxelY;
                                         depthDim = Math.max(0.25, 1.0 - depth * 0.015);
                                     }
