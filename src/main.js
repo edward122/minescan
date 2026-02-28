@@ -50,23 +50,19 @@ const skyManager = new SkyManager(scene);
 const lightingManager = new LightingManager(scene);
 
 const { texture, dataURL } = createTextureAtlas();
-const opaqueMaterial = new THREE.MeshStandardMaterial({
+const opaqueMaterial = new THREE.MeshLambertMaterial({
   map: texture,
   side: THREE.FrontSide,
   transparent: false,
   vertexColors: true,
-  roughness: 0.8,
-  metalness: 0.1,
 });
 
-const transparentMaterial = new THREE.MeshStandardMaterial({
+const transparentMaterial = new THREE.MeshLambertMaterial({
   map: texture,
   side: THREE.FrontSide,
   alphaTest: 0.1,
   transparent: true,
   vertexColors: true,
-  roughness: 0.8,
-  metalness: 0.1,
 });
 
 // Expose atlas globally or pass to UI
