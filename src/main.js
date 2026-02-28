@@ -162,6 +162,8 @@ const particleSystem = new ParticleSystem(scene);
 // Cache settings to avoid calling getSettings() every frame
 let cachedSettings = null;
 let lightUpdateCounter = 0;
+let skyUpdateCounter = 0;
+let cullUpdateCounter = 0;
 
 function applySettings(settings) {
   // Shadows
@@ -1933,7 +1935,12 @@ function animate() {
     camera.updateProjectionMatrix();
   }
 
-  skyManager.update(dt, player.position.x, player.position.z);
+  // Throttle sky update — trig/position calculations don't need 60Hz
+  skyUpdateCounter++;
+  if (skyUpdateCounter >= 3) {
+    skyUpdateCounter = 0;
+    skyManager.update(dt * 3, player.position.x, player.position.z); // compensate for skipped frames
+  }
 
   // Tick Furnace
   inventory.updateFurnace(dt);
@@ -1941,11 +1948,13 @@ function animate() {
     inventoryUI.render(); // Redraw progress bars
   }
 
-  // Make the fog color match the sky background and scale with render distance
-  scene.fog.color.copy(scene.background);
-  const fogChunkDist = settings.renderDistance * world.chunkSize;
-  scene.fog.near = fogChunkDist * 0.6;
-  scene.fog.far = fogChunkDist * 0.95;
+  // Make the fog color match the sky — throttled, doesn't need every frame
+  if (skyUpdateCounter === 0) {
+    scene.fog.color.copy(scene.background);
+    const fogChunkDist = settings.renderDistance * world.chunkSize;
+    scene.fog.near = fogChunkDist * 0.6;
+    scene.fog.far = fogChunkDist * 0.95;
+  }
 
   if (playerAttackCooldown > 0) playerAttackCooldown -= dt;
   player.update(dt);
@@ -2285,15 +2294,19 @@ function animate() {
 
   debugOverlay.update(player, world, camera);
 
-  // Update torch light assignments — throttled to every 5 frames
+  // Update torch light assignments — throttled to every 10 frames
   lightUpdateCounter++;
-  if (lightUpdateCounter >= 5) {
+  if (lightUpdateCounter >= 10) {
     lightUpdateCounter = 0;
     lightingManager.updateLights(player.position.x, player.position.y, player.position.z);
   }
 
-  // Frustum cull chunks — hides meshes behind the camera to reduce draw calls
-  chunkManager.cullChunks(camera, player.position);
+  // Frustum cull chunks — throttled to every 2 frames
+  cullUpdateCounter++;
+  if (cullUpdateCounter >= 2) {
+    cullUpdateCounter = 0;
+    chunkManager.cullChunks(camera, player.position);
+  }
 
   renderer.render(scene, camera);
 }
