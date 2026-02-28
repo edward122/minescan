@@ -31,42 +31,13 @@ export class AudioSystem {
     }
 
     startBGM() {
-        if (!this.ctx) return;
+        // BGM disabled — raw oscillators caused buzzing/humming on many PC sound cards
+    }
 
-        // Evolving ambient drone
-        const osc1 = this.ctx.createOscillator();
-        const osc2 = this.ctx.createOscillator();
-        const lfo = this.ctx.createOscillator();
-
-        osc1.type = 'triangle';
-        osc2.type = 'sine';
-        lfo.type = 'sine';
-
-        // Base frequency
-        osc1.frequency.value = 55; // A1
-        osc2.frequency.value = 110; // A2
-        lfo.frequency.value = 0.05; // Very slow LFO
-
-        const lfoGain = this.ctx.createGain();
-        lfoGain.gain.value = 5;
-
-        // Modulate osc1 frequency slightly
-        lfo.connect(lfoGain);
-        lfoGain.connect(osc1.frequency);
-
-        this.bgmGain = this.ctx.createGain();
-        this.bgmGain.gain.value = 0; // fade in
-
-        osc1.connect(this.bgmGain);
-        osc2.connect(this.bgmGain);
-        this.bgmGain.connect(this.destination);
-
-        osc1.start();
-        osc2.start();
-        lfo.start();
-
-        // Fade in to 0.1 over 10 seconds
-        this.bgmGain.gain.linearRampToValueAtTime(0.05, this.ctx.currentTime + 10);
+    dispose() {
+        if (this.ctx && this.ctx.state !== 'closed') {
+            this.ctx.close();
+        }
     }
 
     _createNoiseBuffer(durationStr = 0.5) {

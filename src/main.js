@@ -38,9 +38,9 @@ camera.position.set(32, 100, 64); // Start higher up to accommodate high terrain
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 container.appendChild(renderer.domElement);
 
 const inputManager = new InputManager(renderer.domElement);
@@ -177,7 +177,7 @@ function applySettings(settings) {
 
   // Resolution scale
   const scale = (settings.resolution || 100) / 100;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * scale);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5) * scale);
 
   // Mouse sensitivity
   player.mouseSensitivity = 0.002 * (settings.sensitivity / 100);
