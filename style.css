@@ -154,8 +154,7 @@ html {
   width: 100%;
   height: 100%;
   z-index: 20;
-  background-color: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
+  background-color: rgba(0, 0, 0, 0.6);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -222,7 +221,6 @@ html {
   border: 2px solid #222;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
   border-radius: 2px;
-  backdrop-filter: blur(2px);
 }
 
 /* Inventory Screen */
@@ -475,8 +473,7 @@ html {
   left: 0;
   width: 100%;
   height: 100%;
-  background-color: rgba(20, 20, 20, 0.65);
-  backdrop-filter: blur(8px);
+  background-color: rgba(20, 20, 20, 0.8);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -489,7 +486,6 @@ html {
 /* Main menu specific: full background image */
 #main-menu {
   background: url('/minescan_bg.png') center center / cover no-repeat;
-  backdrop-filter: none;
   background-color: transparent;
   position: relative;
 }
@@ -531,22 +527,10 @@ html {
   0%,
   100% {
     transform: translateY(0);
-    text-shadow:
-      0 0 10px rgba(80, 200, 255, 0.8),
-      0 0 30px rgba(80, 200, 255, 0.5),
-      0 0 60px rgba(80, 200, 255, 0.3),
-      4px 4px 0 #1a3a4a,
-      6px 6px 12px rgba(0, 0, 0, 0.9);
   }
 
   50% {
     transform: translateY(-10px);
-    text-shadow:
-      0 0 15px rgba(80, 200, 255, 1),
-      0 0 40px rgba(80, 200, 255, 0.7),
-      0 0 80px rgba(80, 200, 255, 0.4),
-      4px 4px 0 #1a3a4a,
-      6px 6px 12px rgba(0, 0, 0, 0.9);
   }
 }
 
@@ -661,8 +645,7 @@ html {
   font-size: 14px;
   z-index: 40;
   pointer-events: none;
-  background-color: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(2px);
+  background-color: rgba(0, 0, 0, 0.7);
   padding: 10px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -705,8 +688,7 @@ html {
 }
 
 #death-screen {
-  background-color: rgba(120, 0, 0, 0.6);
-  backdrop-filter: blur(6px);
+  background-color: rgba(120, 0, 0, 0.75);
 }
 
 /* === World Selection === */
